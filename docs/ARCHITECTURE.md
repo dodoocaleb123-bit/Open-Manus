@@ -1,4 +1,4 @@
-# Phase 1 Architecture
+# Open-Manus Architecture
 
 ## Design invariant
 
@@ -16,6 +16,12 @@ DeepSeek is responsible for:
 - Recovering from model/tool errors
 - Synthesizing specialist results
 - Presenting the final answer
+
+## Phase 3 controller knowledge
+
+`backend/model_adapters/platform_knowledge.py` is the canonical platform knowledge registry. It describes the five model roles, their capabilities, their boundaries, approval-required actions, and capabilities that are not yet integrated.
+
+`DeepSeekController` injects that knowledge as the first system message before every user conversation. It accepts only the controller adapter and rejects caller-supplied system messages. It does not route requests itself; DeepSeek makes the delegation decision.
 
 ## Execution boundary
 
