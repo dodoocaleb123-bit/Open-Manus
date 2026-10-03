@@ -23,9 +23,10 @@ DeepSeek is responsible for:
 
 `DeepSeekController` injects that knowledge as the first system message before every user conversation. It accepts only the controller adapter and rejects caller-supplied system messages. It does not route requests itself; DeepSeek makes the delegation decision.
 
-## Execution boundary
+## Controlled execution boundary
+`backend/execution` is the non-intelligent execution/state layer. `ControlledExecutor` validates the exact command emitted by DeepSeek, looks up only the named model role or registered tool, tracks the task and command-run state, enforces approval gates, and returns an `ExecutionResult`. It does not classify requests, create plans, select a different model, or replace DeepSeek's decisions.
 
-Later phases will add a controlled execution/state layer. That layer is deliberately non-intelligent infrastructure. It will validate and run commands issued by DeepSeek, track status, persist results, enforce permissions, and support pause/resume/cancel behavior. It must not select a different model or replace DeepSeek's plan.
+Phase 5 uses a thread-safe in-memory store. Durable persistence and API/event delivery are later phases.
 
 ```text
 User
