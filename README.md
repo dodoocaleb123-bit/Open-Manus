@@ -30,7 +30,7 @@ This repository currently provides:
 - Reproducible Python project metadata and environment checks
 - No secrets committed to the repository
 
-This phase does **not** yet implement the GUI, model adapters, orchestration protocol, persistence, or external integrations. Those are subsequent phases.
+Phase 2 adds typed OpenAI-compatible adapters and a strict registry for the five model roles. It does **not** yet implement the GUI, DeepSeek orchestration protocol, persistence, or external integrations.
 
 ## Quick start
 
@@ -54,4 +54,5 @@ Install its dependencies in an isolated environment first; see `backend/openmanu
 - [Architecture](docs/ARCHITECTURE.md)
 - [Setup](docs/SETUP.md)
 - [Phase 1 acceptance checklist](docs/PHASE_1.md)
+- [Phase 2 adapter guide](docs/PHASE_2.md)
 - [GUI behavior reference](docs/references/gui-behavior-analysis.md)
