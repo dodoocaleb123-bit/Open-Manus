@@ -28,6 +28,9 @@ DeepSeek is responsible for:
 
 Phase 5 uses a thread-safe in-memory store. Durable persistence and API/event delivery are later phases.
 
+## Phase 6 conversation loop
+`backend/conversation` connects `DeepSeekController` and `ControlledExecutor`. For each turn it sends the current context to DeepSeek, executes the single validated command DeepSeek returns, appends the result, and sends that result back to DeepSeek. The loop pauses for user input or approval and stops on completion, cancellation, failure, or a configurable turn limit. It does not add a second planner.
+
 ```text
 User
   -> DeepSeek controller
