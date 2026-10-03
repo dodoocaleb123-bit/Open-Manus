@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local runtime state
+runtime/
+logs/
+workspace/
+artifacts/
+*.sqlite3
+*.db
+
+# Frontend/build artifacts
+node_modules/
+dist/
+build/
+.cache/
+
+# Large training data and model files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.parquet
+*.npy
+*.npz
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

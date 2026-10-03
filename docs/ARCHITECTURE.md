@@ -1,0 +1,50 @@
+# Phase 1 Architecture
+
+## Design invariant
+
+DeepSeek is the central controller. The platform must send every user request to DeepSeek first, without a keyword classifier or hidden specialist router in front of it.
+
+DeepSeek is responsible for:
+
+- Understanding the request
+- Holding the conversation
+- Planning and decomposing work
+- Selecting specialist models
+- Ordering subtasks
+- Sending progress updates
+- Requesting user input and approval
+- Recovering from model/tool errors
+- Synthesizing specialist results
+- Presenting the final answer
+
+## Execution boundary
+
+Later phases will add a controlled execution/state layer. That layer is deliberately non-intelligent infrastructure. It will validate and run commands issued by DeepSeek, track status, persist results, enforce permissions, and support pause/resume/cancel behavior. It must not select a different model or replace DeepSeek's plan.
+
+```text
+User
+  -> DeepSeek controller
+  -> DeepSeek command
+  -> controlled execution/state layer
+  -> named specialist model or tool
+  -> result returned to DeepSeek
+  -> DeepSeek chooses the next step
+```
+
+## Model roles
+
+| Model | Required role | Boundary |
+| --- | --- | --- |
+| `deepseek-r1:*` | Controller, conversation, planning, routing, synthesis | Receives every user request first |
+| `qwen2.5:3b` | Web research and source gathering | Not the coding model |
+| `qwen2.5-coder:7b` | Software engineering and app building | Not the research model |
+| `gemma3:4b` | Image, document, and visual analysis | Returns findings to DeepSeek |
+| `llama3.2:3b` | Creative concepts and content | Actual image generation requires a separate compatible image backend |
+
+## Repository boundaries
+
+`backend/openmanus-core` preserves the original OpenManus implementation. It remains a reusable backend foundation and is not modified into a GUI in Phase 1.
+
+`backend/openmanus-rl` is a product boundary, not a vendored training environment. RL datasets and GPU-heavy training dependencies should remain separate from the interactive product runtime.
+
+The design-intelligence documents are retained under `docs/design-intelligence`. They are source material for the future controller prompts and coding/creative skills; Phase 1 does not silently inject them into model context.
