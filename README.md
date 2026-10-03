@@ -30,7 +30,7 @@ This repository currently provides:
 - Reproducible Python project metadata and environment checks
 - No secrets committed to the repository
 
-Phase 2 adds typed OpenAI-compatible adapters and a strict registry for the five model roles. Phase 3 adds the structured platform knowledge registry and the DeepSeek-only controller facade. The GUI, structured delegation protocol, persistence, and external integrations remain subsequent phases.
+Phase 2 adds typed OpenAI-compatible adapters and a strict registry for the five model roles. Phase 3 adds the structured platform knowledge registry and the DeepSeek-only controller facade. Phase 4 adds DeepSeek's validated one-command-at-a-time controller protocol. The execution/state layer, GUI, persistence, and external integrations remain subsequent phases.
 
 ## Quick start
 
@@ -56,4 +56,5 @@ Install its dependencies in an isolated environment first; see `backend/openmanu
 - [Phase 1 acceptance checklist](docs/PHASE_1.md)
 - [Phase 2 adapter guide](docs/PHASE_2.md)
 - [Phase 3 controller guide](docs/PHASE_3.md)
+- [Phase 4 protocol guide](docs/PHASE_4.md)
 - [GUI behavior reference](docs/references/gui-behavior-analysis.md)

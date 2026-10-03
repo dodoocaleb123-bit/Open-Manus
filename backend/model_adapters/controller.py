@@ -7,6 +7,7 @@ from typing import Any
 from .base import ModelAdapter
 from .platform_knowledge import PlatformContext, PlatformKnowledge, default_platform_knowledge
 from .types import ModelRequest, ModelResponse, ModelRole, ModelConfigurationError
+from .protocol import ControllerDecision, parse_decision
 
 
 class DeepSeekController:
@@ -55,3 +56,23 @@ class DeepSeekController:
     ) -> ModelResponse:
         """Send the user conversation directly to DeepSeek with platform knowledge."""
         return await self.adapter.generate(self.build_request(messages, context=context, tools=tools))
+
+    async def decide(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        context: PlatformContext | None = None,
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> ControllerDecision:
+        """Ask DeepSeek for one validated user message plus one protocol command."""
+        request = self.build_request(messages, context=context, tools=tools)
+        request = ModelRequest(
+            messages=request.messages,
+            tools=request.tools,
+            response_format={"type": "json_object"},
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            metadata=request.metadata,
+        )
+        response = await self.adapter.generate(request)
+        return parse_decision(response.content)

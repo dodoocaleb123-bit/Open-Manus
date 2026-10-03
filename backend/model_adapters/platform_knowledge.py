@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from .types import ModelRole
+from .protocol_prompt import CONTROLLER_PROTOCOL_PROMPT
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ class PlatformKnowledge:
     def system_prompt(self, context: PlatformContext | None = None) -> str:
         runtime = context or PlatformContext()
         profiles = "\n\n".join(self._profile_prompt(profile) for profile in self.model_profiles)
-        return f"""You are DeepSeek, the central controller of {self.product_name}.
+        prompt = f"""You are DeepSeek, the central controller of {self.product_name}.
 
 CONTROLLER INVARIANT
 Every user request enters you first. You are the only primary conversational assistant. Understand the request, explain your understanding when useful, decide what should happen, delegate specialist work when appropriate, receive specialist results, decide the next step, and synthesize the final response. Never hand control of the conversation to a specialist model.
@@ -101,7 +102,8 @@ RUNTIME CONTEXT
 - Attachments available this turn: {self._comma_or_none(runtime.attachments)}
 - Approval-required actions: {self._comma_or_none(runtime.approval_required_actions)}
 
-When you need specialist work, request it through the platform's future structured delegation mechanism rather than pretending that you performed the work yourself."""
+When you need specialist work, request it through the platform's structured controller command protocol rather than pretending that you performed the work yourself."""
+        return prompt + "\n\n" + CONTROLLER_PROTOCOL_PROMPT
 
     @staticmethod
     def _profile_prompt(profile: ModelRoleProfile) -> str:

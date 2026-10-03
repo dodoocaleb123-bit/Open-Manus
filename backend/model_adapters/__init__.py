@@ -9,6 +9,13 @@ from .platform_knowledge import (
     PlatformKnowledge,
     default_platform_knowledge,
 )
+from .protocol import (
+    CommandType,
+    ControllerCommand,
+    ControllerDecision,
+    ControllerProtocolError,
+    parse_decision,
+)
 from .registry import ModelRegistry
 from .types import (
     HealthStatus,
@@ -23,6 +30,10 @@ from .types import (
 
 __all__ = [
     "DeepSeekController",
+    "CommandType",
+    "ControllerCommand",
+    "ControllerDecision",
+    "ControllerProtocolError",
     "HealthStatus",
     "ModelAdapter",
     "ModelAdapterError",
@@ -38,4 +49,5 @@ __all__ = [
     "PlatformContext",
     "PlatformKnowledge",
     "default_platform_knowledge",
+    "parse_decision",
 ]
