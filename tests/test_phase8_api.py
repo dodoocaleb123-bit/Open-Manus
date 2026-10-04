@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 import urllib.request
+from pathlib import Path
 
 from api import OpenManusAPI, create_server
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus
@@ -83,3 +84,19 @@ def test_api_health_and_http_static_gui(tmp_path):
         server.shutdown()
         server.server_close()
         store.close()
+
+
+def test_catalog_and_real_uploaded_attachment(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENMANUS_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    store = SQLiteStateStore(tmp_path / "upload.sqlite3")
+    executor = ControlledExecutor(Registry(), store=store)
+    api = OpenManusAPI(controller=FakeController([]), executor=executor)
+    task = executor.create_task("Inspect an upload")
+    uploaded = api.add_uploaded_attachment(task.task_id, "notes.txt", "text/plain", b"local notes")
+    path = Path(uploaded["attachment"]["path"])
+    assert path.read_text() == "local notes"
+    assert uploaded["attachment"]["metadata"]["uploaded"] is True
+    catalog = api.catalog()
+    assert catalog["agents"][0]["primary"] is True
+    assert {"agents", "skills", "plugins", "scheduled_tasks", "library", "projects", "services"} <= catalog.keys()
+    store.close()

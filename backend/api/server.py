@@ -5,8 +5,12 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import threading
+import uuid
 from dataclasses import asdict, is_dataclass
+from email import policy
+from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -135,12 +139,60 @@ class OpenManusAPI:
             result = await self.loop.cancel(task_id, reason)
         return _result_payload(result)
 
+    async def retry(self, task_id: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        with self._task_lock:
+            result = await self.loop.retry(task_id, tools=(body or {}).get("tools", ()))
+        return _result_payload(result)
+
+    def catalog(self) -> dict[str, Any]:
+        workspace = Path(os.getenv("OPENMANUS_WORKSPACE_ROOT", "./workspace")).resolve()
+        projects = []
+        if workspace.is_dir():
+            projects = [{"name": path.name, "path": str(path), "kind": "folder"} for path in sorted(workspace.iterdir()) if path.is_dir()]
+        return {
+            "agents": [
+                {"id": "deepseek", "name": "DeepSeek", "role": "Controller", "primary": True, "model": os.getenv("DEEPSEEK_CONTROLLER_MODEL", "deepseek-r1:7b")},
+                {"id": "research", "name": "Qwen Research", "role": "Research specialist", "model": os.getenv("RESEARCH_LLM_MODEL", "qwen2.5:3b")},
+                {"id": "coder", "name": "Qwen Coder", "role": "Coding specialist", "model": os.getenv("CODER_LLM_MODEL", "qwen2.5-coder:7b")},
+                {"id": "vision", "name": "Gemma Vision", "role": "Visual specialist", "model": os.getenv("VISION_LLM_MODEL", "gemma3:4b")},
+                {"id": "creative", "name": "Llama Creative", "role": "Creative specialist", "model": os.getenv("CREATIVE_LLM_MODEL", "llama3.2:3b")},
+            ],
+            "skills": [
+                {"id": "research", "name": "Web research", "status": "ready"},
+                {"id": "coding", "name": "Software engineering", "status": "ready"},
+                {"id": "vision", "name": "Image and document analysis", "status": "ready"},
+                {"id": "creative", "name": "Creative direction", "status": "ready"},
+            ],
+            "plugins": [{"id": "github", "name": "GitHub", "status": "connected" if os.getenv("GITHUB_ENABLED", "false").lower() == "true" else "disabled"}],
+            "scheduled_tasks": [],
+            "projects": projects,
+            "library": [{"task_id": task.task_id, "request": task.user_request, "status": task.status.value} for task in self.store.list_tasks()],
+            "services": {
+                "ollama": {"name": "Ollama", "base_url": os.getenv("DEEPSEEK_CONTROLLER_BASE_URL", "http://localhost:11434/v1"), "status": "local"},
+                "github": {"name": "GitHub", "status": "connected" if os.getenv("GITHUB_ENABLED", "false").lower() == "true" else "disabled"},
+            },
+        }
+
     def add_attachment(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         attachment_id = str(body.get("attachment_id", "")).strip()
         path = str(body.get("path", "")).strip()
         if not attachment_id or not path:
             raise ValueError("attachment_id and path are required")
         self.store.record_attachment(task_id, attachment_id, path, body.get("media_type"), body.get("metadata", {}))
+        return {"attachment": self.store.list_attachments(task_id)[-1]}
+
+    def add_uploaded_attachment(self, task_id: str, filename: str, content_type: str | None, data: bytes) -> dict[str, Any]:
+        if len(data) > 25 * 1024 * 1024:
+            raise ValueError("uploaded file is larger than 25 MB")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "upload.bin").name) or "upload.bin"
+        context = self.store.load_context(task_id) if hasattr(self.store, "load_context") else None
+        workspace = Path(context.workspace_root if context else os.getenv("OPENMANUS_WORKSPACE_ROOT", "./workspace"))
+        target_dir = workspace / "attachments" / task_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{uuid.uuid4().hex[:10]}_{safe_name}"
+        target.write_bytes(data)
+        attachment_id = f"att_{uuid.uuid4().hex}"
+        self.store.record_attachment(task_id, attachment_id, str(target), content_type, {"filename": safe_name, "size": len(data), "uploaded": True})
         return {"attachment": self.store.list_attachments(task_id)[-1]}
 
     def add_artifact(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -179,6 +231,18 @@ class _RequestHandler(BaseHTTPRequestHandler):
             raise ValueError("request body must be a JSON object")
         return data
 
+    def _read_multipart_file(self) -> tuple[str, str | None, bytes]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > 26 * 1024 * 1024:
+            raise ValueError("multipart request is larger than 26 MB")
+        raw = self.rfile.read(length)
+        headers = f"Content-Type: {self.headers.get('Content-Type', '')}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+        message = BytesParser(policy=policy.default).parsebytes(headers + raw)
+        for part in message.iter_attachments():
+            payload = part.get_payload(decode=True) or b""
+            return part.get_filename() or "upload.bin", part.get_content_type(), payload
+        raise ValueError("multipart request did not contain a file")
+
     def _route(self) -> tuple[str, list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
         return parsed.path, [unquote(part) for part in parsed.path.split("/") if part], parse_qs(parsed.query)
@@ -195,6 +259,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[:2] == ["api", "tasks"]:
                 self._send_json(self.api.get_task(parts[2]))
                 return
+            if path == "/api/catalog":
+                self._send_json(self.api.catalog())
+                return
             self._serve_static(path)
         except Exception as exc:
             self._send_json({"error": str(exc)}, HTTPStatus.NOT_FOUND if "Unknown task" in str(exc) else HTTPStatus.BAD_REQUEST)
@@ -202,6 +269,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, parts, _ = self._route()
         try:
+            if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "attachments" and self.headers.get("Content-Type", "").startswith("multipart/"):
+                filename, content_type, data = self._read_multipart_file()
+                self._send_json(self.api.add_uploaded_attachment(parts[2], filename, content_type, data), HTTPStatus.CREATED)
+                return
             body = self._read_json()
             if path == "/api/tasks":
                 self._send_json(asyncio.run(self.api.create_task(body)), HTTPStatus.CREATED)
@@ -216,6 +287,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     return
                 if action == "cancel":
                     self._send_json(asyncio.run(self.api.cancel(task_id, body)))
+                    return
+                if action == "retry":
+                    self._send_json(asyncio.run(self.api.retry(task_id, body)))
                     return
                 if action == "attachments":
                     self._send_json(self.api.add_attachment(task_id, body), HTTPStatus.CREATED)

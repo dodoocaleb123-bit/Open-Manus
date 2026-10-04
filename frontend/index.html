@@ -1,55 +1,37 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Open-Manus / Local Control Room</title>
-  <link rel="stylesheet" href="/styles.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open-Manus / Local Control Room</title><link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div class="shell">
-    <aside class="rail">
-      <div class="brand"><span class="brand-mark">OM</span><div><strong>OPEN-MANUS</strong><small>LOCAL CONTROL ROOM</small></div></div>
-      <div class="rail-section-label">WORKSPACE</div>
-      <button id="new-task" class="new-task">＋ New task</button>
-      <div id="task-list" class="task-list"><div class="empty">No tasks yet.</div></div>
-      <div class="rail-footer"><span class="status-dot"></span><span>Local runtime</span><span id="health-label">checking</span></div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div><span class="eyebrow">DEEPSEEK CONTROLLER</span><h1 id="page-title">Start a local task</h1></div>
-        <div class="top-meta"><span class="chip">SQLite persistence</span><span class="chip">Ollama-compatible</span></div>
-      </header>
-
-      <section id="empty-state" class="empty-state">
-        <div class="orb">◌</div>
-        <div class="eyebrow">PHASE 8 / API + GUI</div>
-        <h2>Make the next move locally.</h2>
-        <p>Every request enters DeepSeek first. Your local controller decides, delegates, and reports back through the persisted execution loop.</p>
-        <button id="empty-new-task" class="primary">Create your first task <span>→</span></button>
-      </section>
-
-      <section id="workspace" class="workspace hidden">
-        <div class="conversation-panel">
-          <div id="conversation" class="conversation"></div>
-          <div id="action-card" class="action-card hidden"></div>
-          <form id="composer" class="composer">
-            <textarea id="message-input" rows="2" placeholder="Ask DeepSeek to plan, research, build, or analyze…"></textarea>
-            <div class="composer-bottom"><span class="hint">Enter sends · Shift+Enter adds a line</span><button class="send" type="submit">Send <span>↗</span></button></div>
-          </form>
-        </div>
-        <aside class="inspector">
-          <div class="inspector-head"><span class="eyebrow">TASK INSPECTOR</span><span id="task-status" class="status-pill">—</span></div>
-          <div id="task-summary" class="task-summary"></div>
-          <div class="inspector-block"><div class="block-title">CONTEXT</div><div id="context-view" class="mono muted">No context loaded.</div></div>
-          <div class="inspector-block"><div class="block-title">ACTIVITY</div><div id="activity-view" class="activity-list"></div></div>
-          <div class="inspector-block"><div class="block-title">FILES & OUTPUTS</div><div id="files-view" class="file-list"></div><button id="add-file" class="ghost small">＋ Add local path</button></div>
-        </aside>
-      </section>
-    </main>
-  </div>
-  <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
-</body>
-</html>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand"><span class="brand-mark">OM</span><div><strong>OPEN-MANUS</strong><small>LOCAL CONTROL ROOM</small></div></div>
+    <div class="rail-section-label">WORKSPACE</div>
+    <button id="new-task" class="new-task">＋ New task</button>
+    <nav class="primary-nav">
+      <button data-view="agents">◈ <span>Agents</span></button><button data-view="skills">✦ <span>Skills</span></button><button data-view="plugins">⊙ <span>Plugins</span></button><button data-view="scheduled_tasks">◷ <span>Scheduled Tasks</span></button><button data-view="library">▤ <span>Library</span></button><button data-view="projects">▦ <span>Projects</span></button>
+    </nav>
+    <div class="rail-section-label recent-label">RECENT TASKS</div>
+    <div id="task-list" class="task-list"><div class="empty">No tasks yet.</div></div>
+    <div class="rail-footer"><span class="status-dot"></span><span>Local runtime</span><span id="health-label">checking</span></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div><span class="eyebrow">DEEPSEEK CONTROLLER</span><h1 id="page-title">Start a local task</h1></div><div class="top-meta"><span class="chip">SQLite persistence</span><span class="chip">Ollama-compatible</span></div></header>
+    <section id="empty-state" class="empty-state"><div class="orb">◌</div><div class="eyebrow">PHASE 8 / API + GUI</div><h2>Make the next move locally.</h2><p>Every request enters DeepSeek first. Your local controller decides, delegates, and reports back through the persisted execution loop.</p><button id="empty-new-task" class="primary">Create your first task <span>→</span></button></section>
+    <section id="workspace" class="workspace hidden">
+      <div class="conversation-panel"><div id="conversation" class="conversation"></div><div id="action-card" class="action-card hidden"></div>
+        <form id="composer" class="composer"><textarea id="message-input" rows="2" placeholder="Ask DeepSeek to plan, research, build, or analyze…"></textarea><div class="composer-bottom"><label class="upload-label">⌕ Attach <input id="file-input" type="file" hidden></label><span class="hint">Enter sends · Shift+Enter adds a line</span><button class="send" type="submit">Send <span>↗</span></button></div></form>
+      </div>
+      <aside class="inspector"><div class="inspector-head"><span class="eyebrow">TASK INSPECTOR</span><span id="task-status" class="status-pill">—</span></div><div id="task-summary" class="task-summary"></div>
+        <div class="tab-bar"><button class="active" data-tab="preview">Preview</button><button data-tab="code">Code</button><button data-tab="browser">Browser</button><button data-tab="files">Files</button><button data-tab="logs">Logs</button><button data-tab="settings">Settings</button></div>
+        <div id="tab-content" class="tab-content"></div>
+        <div class="inspector-block"><div class="block-title">CONTEXT</div><div id="context-view" class="mono muted">No context loaded.</div></div>
+      </aside>
+    </section>
+  </main>
+</div>
+<div id="catalog-drawer" class="drawer hidden"><div class="drawer-head"><span id="drawer-title">Workspace</span><button id="close-drawer">×</button></div><div id="drawer-content"></div></div><div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body></html>

@@ -135,6 +135,29 @@ class DeepSeekConversationLoop:
         self._append_message(task_id, {"role": "user", "content": self._execution_message(command, result)})
         return self._result(task_id)
 
+    async def retry(
+        self,
+        task_id: str,
+        *,
+        context: PlatformContext | None = None,
+        tools: Sequence[Mapping[str, Any]] = (),
+    ) -> ConversationResult:
+        """Retry the most recent failed command, then return control to DeepSeek."""
+        self._require_conversation(task_id)
+        context = context or self._contexts.get(task_id) or self._load_context(task_id) or PlatformContext()
+        failed_runs = [run for run in self.executor.store.list_runs(task_id) if run.error]
+        if not failed_runs:
+            raise ConversationLoopError("Task has no failed command to retry")
+        original = failed_runs[-1].command
+        resumed = await self.executor.execute(task_id, ControllerCommand(CommandType.RETRY_TASK))
+        await self._record_execution(task_id, resumed)
+        replay = await self.executor.execute(task_id, original)
+        await self._record_execution(task_id, replay)
+        self._append_message(task_id, {"role": "user", "content": self._execution_message(original, replay)})
+        if replay.task_status is not TaskStatus.RUNNING:
+            return self._result(task_id)
+        return await self._drive(task_id, context=context, tools=tools)
+
     async def _drive(
         self,
         task_id: str,
