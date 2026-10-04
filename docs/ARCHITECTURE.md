@@ -34,6 +34,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 7 persistence boundary
 `SQLiteStateStore` is the local durability boundary. A new process can load a task, its command history, conversation messages, controller events, and `PlatformContext`, then continue the same DeepSeek conversation. The database records metadata and local paths for attachments and artifacts; it does not move large files into the database. Persistence records state and activity but does not make planning decisions.
 
+## Phase 8 API and GUI boundary
+`backend/api` provides a loopback-first JSON HTTP API and serves the static `frontend` control room. The GUI reads persisted task state and sends user messages, approvals, input, cancellation, attachment metadata, and artifact metadata through that API. It is a client of the DeepSeek loop, not a new orchestration layer. Authentication and remote access are intentionally out of scope for the local single-user phase.
+
 ```text
 User
   -> DeepSeek controller

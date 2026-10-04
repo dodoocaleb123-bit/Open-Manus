@@ -89,6 +89,14 @@ class InMemoryStateStore:
             task = self.get_task(task_id)
             return replace(task, approved_actions=set(task.approved_actions), command_history=list(task.command_history))
 
+    def list_tasks(self, status=None) -> tuple[TaskRecord, ...]:
+        """Return detached task records, newest first when timestamps are available."""
+        with self._lock:
+            tasks = [replace(task, approved_actions=set(task.approved_actions), command_history=list(task.command_history)) for task in self._tasks.values()]
+        if status is not None:
+            tasks = [task for task in tasks if task.status is status]
+        return tuple(sorted(tasks, key=lambda task: task.updated_at, reverse=True))
+
     def list_runs(self, task_id: str) -> tuple[CommandRun, ...]:
         with self._lock:
             return tuple(run for run in self._runs.values() if run.task_id == task_id)
