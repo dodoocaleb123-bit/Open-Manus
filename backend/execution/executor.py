@@ -65,10 +65,12 @@ class ControlledExecutor:
         task = self.store.get_task(task_id)
         self._ensure_command_allowed(task, command.type)
         run = self.store.create_run(task_id, command)
+        self._record_activity(task_id, "command", command.to_dict())
         try:
             result = await self._dispatch(task, run, command)
             return result
         except Exception as exc:
+            self._record_activity(task_id, "error", {"command": command.to_dict(), "error": str(exc)})
             self.store.finish_run(run.run_id, RunStatus.FAILED, error=str(exc))
             self.store.update_task(task_id, status=TaskStatus.FAILED, last_error=str(exc))
             return ExecutionResult(
@@ -92,6 +94,7 @@ class ControlledExecutor:
             pending_approval=None,
             approved_actions=task.approved_actions | {action},
         )
+        self._record_activity(task_id, "approval", {"action": action, "approved": True})
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.RUNNING, output={"approved": action})
 
     async def reject(self, task_id: str, reason: str = "User rejected the approval request") -> ExecutionResult:
@@ -101,6 +104,7 @@ class ControlledExecutor:
         self.store.update_task(task_id, status=TaskStatus.CANCELLED, pending_approval=None, last_error=reason)
         if task.current_run_id:
             self.store.finish_run(task.current_run_id, RunStatus.CANCELLED, error=reason)
+        self._record_activity(task_id, "approval", {"approved": False, "reason": reason})
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.CANCELLED, output={"rejected": True})
 
     async def submit_user_input(self, task_id: str, value: str) -> ExecutionResult:
@@ -112,6 +116,7 @@ class ControlledExecutor:
         self.store.update_task(task_id, status=TaskStatus.RUNNING, pending_input=None, last_result=value)
         if task.current_run_id:
             self.store.finish_run(task.current_run_id, RunStatus.COMPLETED, result=value)
+        self._record_activity(task_id, "user_input", {"value": value})
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.RUNNING, output=value)
 
     async def _dispatch(self, task: TaskRecord, run: CommandRun, command: ControllerCommand) -> ExecutionResult:
@@ -161,7 +166,9 @@ class ControlledExecutor:
             ),
             metadata={"task_id": task.task_id, "run_id": run.run_id, "delegated_by": "deepseek"},
         )
+        self._record_activity(task.task_id, "delegated_call", {"role": role.value, "objective": objective, "run_id": run.run_id})
         response = await adapter.generate(request)
+        self._record_activity(task.task_id, "model_result", {"role": role.value, "run_id": run.run_id, "content": response.content})
         self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=response.content)
         self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=response.content, last_error=None)
         return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.RUNNING, output=response.content)
@@ -185,6 +192,7 @@ class ControlledExecutor:
         value = spec.handler(command.arguments["arguments"])
         if inspect.isawaitable(value):
             value = await value
+        self._record_activity(task.task_id, "tool_activity", {"tool": name, "arguments": command.arguments["arguments"], "result": value})
         self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=value)
         self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=value, last_error=None)
         return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.RUNNING, output=value)
@@ -210,6 +218,11 @@ class ControlledExecutor:
         self.store.finish_run(run.run_id, run_status, result=output)
         self.store.update_task(task.task_id, status=status, last_result=output, last_error=None)
         return ExecutionResult(task.task_id, run.run_id, True, status, output=output)
+
+    def _record_activity(self, task_id: str, activity_type: str, payload: Mapping[str, Any]) -> None:
+        record_activity = getattr(self.store, "record_activity", None)
+        if record_activity is not None:
+            record_activity(task_id, activity_type, payload)
 
     @staticmethod
     def _ensure_command_allowed(task: TaskRecord, command_type: CommandType) -> None:

@@ -68,6 +68,7 @@ class DeepSeekConversationLoop:
         self._messages: dict[str, list[Mapping[str, Any]]] = {}
         self._events: dict[str, list[ConversationEvent]] = {}
         self._turns: dict[str, int] = {}
+        self._contexts: dict[str, PlatformContext] = {}
 
     async def start(
         self,
@@ -79,10 +80,14 @@ class DeepSeekConversationLoop:
         if not user_message.strip():
             raise ConversationLoopError("user_message must not be empty")
         task = self.executor.create_task(user_message)
-        self._messages[task.task_id] = [{"role": "user", "content": user_message}]
+        effective_context = context or PlatformContext()
+        self._messages[task.task_id] = []
         self._events[task.task_id] = []
         self._turns[task.task_id] = 0
-        return await self._drive(task.task_id, context=context, tools=tools)
+        self._contexts[task.task_id] = effective_context
+        self._append_message(task.task_id, {"role": "user", "content": user_message})
+        self._save_context(task.task_id, effective_context)
+        return await self._drive(task.task_id, context=effective_context, tools=tools)
 
     async def provide_user_input(
         self,
@@ -93,8 +98,9 @@ class DeepSeekConversationLoop:
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> ConversationResult:
         self._require_conversation(task_id)
+        context = context or self._contexts.get(task_id) or self._load_context(task_id) or PlatformContext()
         result = await self.executor.submit_user_input(task_id, value)
-        self._messages[task_id].append({"role": "user", "content": f"User provided the requested input: {value}"})
+        self._append_message(task_id, {"role": "user", "content": f"User provided the requested input: {value}"})
         await self._record_execution(task_id, result)
         return await self._drive(task_id, context=context, tools=tools)
 
@@ -107,14 +113,16 @@ class DeepSeekConversationLoop:
         tools: Sequence[Mapping[str, Any]] = (),
     ) -> ConversationResult:
         self._require_conversation(task_id)
+        context = context or self._contexts.get(task_id) or self._load_context(task_id) or PlatformContext()
         approval = await self.executor.approve(task_id, action)
-        self._messages[task_id].append({"role": "user", "content": f"User approved the action: {action}"})
+        self._append_message(task_id, {"role": "user", "content": f"User approved the action: {action}"})
         await self._record_execution(task_id, approval)
         pending_run = self.executor.store.get_run(approval.run_id) if approval.run_id else None
         if pending_run is None:
             raise ConversationLoopError("Approved task has no pending command to resume")
         replay = await self.executor.execute(task_id, pending_run.command)
         await self._record_execution(task_id, replay)
+        self._append_message(task_id, {"role": "user", "content": self._execution_message(pending_run.command, replay)})
         if replay.task_status is not TaskStatus.RUNNING:
             return self._result(task_id)
         return await self._drive(task_id, context=context, tools=tools)
@@ -124,6 +132,7 @@ class DeepSeekConversationLoop:
         command = ControllerCommand(CommandType.CANCEL_TASK, {"reason": reason})
         result = await self.executor.execute(task_id, command)
         await self._record_execution(task_id, result)
+        self._append_message(task_id, {"role": "user", "content": self._execution_message(command, result)})
         return self._result(task_id)
 
     async def _drive(
@@ -134,6 +143,9 @@ class DeepSeekConversationLoop:
         tools: Sequence[Mapping[str, Any]],
     ) -> ConversationResult:
         self._require_conversation(task_id)
+        context = context or self._contexts.get(task_id) or self._load_context(task_id) or PlatformContext()
+        self._contexts[task_id] = context
+        self._save_context(task_id, context)
         while self._turns[task_id] < self.max_turns:
             task = self.executor.store.snapshot(task_id)
             if task.status is not TaskStatus.RUNNING:
@@ -141,25 +153,23 @@ class DeepSeekConversationLoop:
             self._turns[task_id] += 1
             decision = await self.controller.decide(self._messages[task_id], context=context, tools=tools)
             await self._record_decision(task_id, decision)
-            self._messages[task_id].append(
-                {"role": "assistant", "content": json.dumps(decision.to_dict(), ensure_ascii=False)}
+            self._append_message(
+                task_id,
+                {"role": "assistant", "content": json.dumps(decision.to_dict(), ensure_ascii=False)},
             )
-
             command = decision.command
             if command is None:
                 if decision.status == "completed":
                     command = ControllerCommand(CommandType.COMPLETE_TASK)
                 else:
-                    self._messages[task_id].append(
-                        {"role": "user", "content": "No command was executed. Decide the next step or complete the task."}
+                    self._append_message(
+                        task_id,
+                        {"role": "user", "content": "No command was executed. Decide the next step or complete the task."},
                     )
                     continue
-
             result = await self.executor.execute(task_id, command)
             await self._record_execution(task_id, result)
-            self._messages[task_id].append(
-                {"role": "user", "content": self._execution_message(command, result)}
-            )
+            self._append_message(task_id, {"role": "user", "content": self._execution_message(command, result)})
             if result.task_status is not TaskStatus.RUNNING:
                 return self._result(task_id)
 
@@ -179,6 +189,9 @@ class DeepSeekConversationLoop:
             status=task.status,
             command_type=decision.command.type.value if decision.command else None,
         )
+        record_activity = getattr(self.executor.store, "record_activity", None)
+        if record_activity is not None:
+            record_activity(task_id, "controller_decision", decision.to_dict())
         await self._emit(task_id, event)
 
     async def _record_execution(self, task_id: str, result: ExecutionResult) -> None:
@@ -187,13 +200,15 @@ class DeepSeekConversationLoop:
             task_id=task_id,
             message=result.error or "Command execution returned",
             status=result.task_status,
-            command_type=None,
             output=result.output,
         )
         await self._emit(task_id, event)
 
     async def _emit(self, task_id: str, event: ConversationEvent) -> None:
         self._events[task_id].append(event)
+        append_event = getattr(self.executor.store, "append_event", None)
+        if append_event is not None:
+            append_event(event)
         if self.event_sink is not None:
             value = self.event_sink(event)
             if inspect.isawaitable(value):
@@ -216,10 +231,44 @@ class DeepSeekConversationLoop:
         )
 
     def _require_conversation(self, task_id: str) -> None:
-        if task_id not in self._messages:
-            raise ConversationLoopError(
-                "Conversation context is not available in this process; a future persistence phase must restore it before resume."
+        if task_id in self._messages:
+            return
+        list_messages = getattr(self.executor.store, "list_messages", None)
+        if list_messages is None:
+            raise ConversationLoopError("Conversation context is not available in this process")
+        self._messages[task_id] = list(list_messages(task_id))
+        list_events = getattr(self.executor.store, "list_events", None)
+        persisted_events = list_events(task_id) if list_events is not None else ()
+        self._events[task_id] = [
+            ConversationEvent(
+                kind=item["kind"],
+                task_id=task_id,
+                message=item["message"],
+                status=TaskStatus(item["status"]),
+                command_type=item.get("command_type"),
+                output=item.get("output"),
             )
+            for item in persisted_events
+        ]
+        self._turns[task_id] = sum(1 for message in self._messages[task_id] if message.get("role") == "assistant")
+        loaded_context = self._load_context(task_id)
+        if loaded_context is not None:
+            self._contexts[task_id] = loaded_context
+
+    def _append_message(self, task_id: str, message: Mapping[str, Any]) -> None:
+        self._messages[task_id].append(message)
+        append_message = getattr(self.executor.store, "append_message", None)
+        if append_message is not None:
+            append_message(task_id, message)
+
+    def _save_context(self, task_id: str, context: PlatformContext) -> None:
+        save_context = getattr(self.executor.store, "save_context", None)
+        if save_context is not None:
+            save_context(task_id, context)
+
+    def _load_context(self, task_id: str) -> PlatformContext | None:
+        load_context = getattr(self.executor.store, "load_context", None)
+        return load_context(task_id) if load_context is not None else None
 
     @staticmethod
     def _execution_message(command: ControllerCommand, result: ExecutionResult) -> str:

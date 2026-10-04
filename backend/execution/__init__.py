@@ -2,6 +2,7 @@
 
 from .executor import ControlledExecutor, ExecutionError, ToolSpec
 from .store import ExecutionStateError, InMemoryStateStore
+from .sqlite_store import SQLiteStateStore
 from .types import CommandRun, ExecutionResult, RunStatus, TaskRecord, TaskStatus
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     "ExecutionStateError",
     "InMemoryStateStore",
     "RunStatus",
+    "SQLiteStateStore",
     "TaskRecord",
     "TaskStatus",
     "ToolSpec",
