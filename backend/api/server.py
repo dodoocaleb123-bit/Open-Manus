@@ -5,9 +5,7 @@ import asyncio
 import json
 import mimetypes
 import os
-import re
 import threading
-import uuid
 from dataclasses import asdict, is_dataclass
 from email import policy
 from email.parser import BytesParser
@@ -18,6 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 from conversation import DeepSeekConversationLoop
+from attachments import AttachmentPipeline
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
 
@@ -70,6 +69,7 @@ class OpenManusAPI:
         tools: tuple[ToolSpec, ...] = (),
     ) -> None:
         self.store = store or (executor.store if executor is not None else SQLiteStateStore.from_environment())
+        self.attachments = AttachmentPipeline(self.store)
         registry = registry or (executor.registry if executor is not None else self._default_registry())
         self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
@@ -174,26 +174,19 @@ class OpenManusAPI:
         }
 
     def add_attachment(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
-        attachment_id = str(body.get("attachment_id", "")).strip()
         path = str(body.get("path", "")).strip()
-        if not attachment_id or not path:
-            raise ValueError("attachment_id and path are required")
-        self.store.record_attachment(task_id, attachment_id, path, body.get("media_type"), body.get("metadata", {}))
-        return {"attachment": self.store.list_attachments(task_id)[-1]}
+        if not path:
+            raise ValueError("path is required")
+        record = self.attachments.ingest_path(task_id, path)
+        self.loop.add_attachment_context(task_id, record.to_dict())
+        return {"attachment": record.to_dict()}
 
     def add_uploaded_attachment(self, task_id: str, filename: str, content_type: str | None, data: bytes) -> dict[str, Any]:
         if len(data) > 25 * 1024 * 1024:
             raise ValueError("uploaded file is larger than 25 MB")
-        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename or "upload.bin").name) or "upload.bin"
-        context = self.store.load_context(task_id) if hasattr(self.store, "load_context") else None
-        workspace = Path(context.workspace_root if context else os.getenv("OPENMANUS_WORKSPACE_ROOT", "./workspace"))
-        target_dir = workspace / "attachments" / task_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{uuid.uuid4().hex[:10]}_{safe_name}"
-        target.write_bytes(data)
-        attachment_id = f"att_{uuid.uuid4().hex}"
-        self.store.record_attachment(task_id, attachment_id, str(target), content_type, {"filename": safe_name, "size": len(data), "uploaded": True})
-        return {"attachment": self.store.list_attachments(task_id)[-1]}
+        record = self.attachments.ingest(task_id, filename, content_type, data)
+        self.loop.add_attachment_context(task_id, record.to_dict())
+        return {"attachment": record.to_dict()}
 
     def add_artifact(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         artifact_id = str(body.get("artifact_id", "")).strip()

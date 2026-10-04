@@ -168,10 +168,11 @@ class ControlledExecutor:
         )
         self._record_activity(task.task_id, "delegated_call", {"role": role.value, "objective": objective, "run_id": run.run_id})
         response = await adapter.generate(request)
-        self._record_activity(task.task_id, "model_result", {"role": role.value, "run_id": run.run_id, "content": response.content})
-        self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=response.content)
-        self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=response.content, last_error=None)
-        return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.RUNNING, output=response.content)
+        output = self._structured_vision_findings(response.content) if role is ModelRole.VISION else response.content
+        self._record_activity(task.task_id, "model_result", {"role": role.value, "run_id": run.run_id, "content": output})
+        self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=output)
+        self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=output, last_error=None)
+        return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.RUNNING, output=output)
 
     async def _run_tool(self, task: TaskRecord, run: CommandRun, command: ControllerCommand) -> ExecutionResult:
         name = str(command.arguments["tool"])
@@ -223,6 +224,18 @@ class ControlledExecutor:
         record_activity = getattr(self.store, "record_activity", None)
         if record_activity is not None:
             record_activity(task_id, activity_type, payload)
+
+    @staticmethod
+    def _structured_vision_findings(content: str) -> str:
+        try:
+            parsed = json.loads(content)
+            findings = parsed if isinstance(parsed, dict) else {"raw": parsed}
+        except json.JSONDecodeError:
+            findings = {"raw": content}
+        return json.dumps(
+            {"specialist": "gemma", "analysis_type": "visual_attachment", "findings": findings},
+            ensure_ascii=False,
+        )
 
     @staticmethod
     def _ensure_command_allowed(task: TaskRecord, command_type: CommandType) -> None:

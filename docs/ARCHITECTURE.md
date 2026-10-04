@@ -37,6 +37,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 8 API and GUI boundary
 `backend/api` provides a loopback-first JSON HTTP API and serves the static `frontend` control room. The GUI reads persisted task state and sends user messages, approvals, input, cancellation, attachment metadata, and artifact metadata through that API. It is a client of the DeepSeek loop, not a new orchestration layer. Authentication and remote access are intentionally out of scope for the local single-user phase.
 
+## Phase 9 attachment boundary
+`backend/attachments` validates and stores task-scoped files, performs deterministic local safety checks, extracts bounded text or preview metadata, and injects only a safe attachment description into the DeepSeek conversation. DeepSeek decides whether to delegate to the `vision` role. The executor formats Gemma's response as structured findings before returning it to DeepSeek; uploads never speak directly as a second chatbot.
+
 ```text
 User
   -> DeepSeek controller

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from execution import ControlledExecutor, ExecutionResult, TaskStatus
@@ -157,6 +157,32 @@ class DeepSeekConversationLoop:
         if replay.task_status is not TaskStatus.RUNNING:
             return self._result(task_id)
         return await self._drive(task_id, context=context, tools=tools)
+
+    def add_attachment_context(self, task_id: str, attachment: Mapping[str, Any]) -> None:
+        """Add a safe attachment description to the conversation without exposing secrets or raw paths."""
+        self._require_conversation(task_id)
+        context = self._contexts.get(task_id) or self._load_context(task_id) or PlatformContext()
+        filename = str(attachment.get("filename", "attachment"))
+        descriptor = {
+            "attachment_id": attachment.get("attachment_id"),
+            "filename": filename,
+            "media_type": attachment.get("media_type"),
+            "size": attachment.get("size"),
+            "description": attachment.get("description"),
+            "extracted_text": str(attachment.get("extracted_text", ""))[:12000],
+            "gemma_supported": bool(attachment.get("gemma_supported", False)),
+        }
+        names = tuple(item for item in context.attachments if item != filename)
+        updated_context = replace(context, attachments=(*names, filename))
+        self._contexts[task_id] = updated_context
+        self._save_context(task_id, updated_context)
+        self._append_message(
+            task_id,
+            {"role": "user", "content": "A file is now available to inspect:\n" + json.dumps(descriptor, ensure_ascii=False)},
+        )
+        record_activity = getattr(self.executor.store, "record_activity", None)
+        if record_activity is not None:
+            record_activity(task_id, "attachment_ingested", descriptor)
 
     async def _drive(
         self,
