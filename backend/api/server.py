@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from conversation import DeepSeekConversationLoop
 from attachments import AttachmentPipeline
+from coding import CodingWorkspace
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
 from research import ResearchToolset
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
@@ -71,15 +72,35 @@ class OpenManusAPI:
     ) -> None:
         self.store = store or (executor.store if executor is not None else SQLiteStateStore.from_environment())
         self.attachments = AttachmentPipeline(self.store)
+        coding_workspace = CodingWorkspace(os.getenv("OPENMANUS_PROJECTS_ROOT", "./workspace/projects"))
+        self.coding_workspace = coding_workspace
         research_tools = ResearchToolset()
         default_tools = tuple(
             ToolSpec(name=name, handler=handler, description=f"Qwen research tool: {name}")
             for name, handler in research_tools.handlers().items()
         )
+        coding_tools = tuple(
+            ToolSpec(name=name, handler=getattr(coding_workspace, method), description=f"Qwen coder tool: {name}")
+            for name, method in {
+                "coding_create_project": "create_project",
+                "coding_write_file": "write_file",
+                "coding_read_file": "read_file",
+                "coding_file_tree": "file_tree",
+                "coding_manage_dependencies": "manage_dependencies",
+                "coding_run_tests": "run_tests",
+                "coding_run_build": "run_build",
+                "coding_run_command": "run_command",
+                "coding_snapshot": "snapshot",
+                "coding_export_project": "export_project",
+                "coding_start_preview": "start_preview",
+                "coding_stop_preview": "stop_preview",
+                "coding_preview_status": "preview_status",
+            }.items()
+        )
         registry = registry or (executor.registry if executor is not None else self._default_registry())
-        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools)
+        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools)
         if executor is not None:
-            for tool in default_tools:
+            for tool in default_tools + coding_tools:
                 self.executor.register_tool(tool)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
         self.loop = DeepSeekConversationLoop(self.controller, self.executor, max_turns=max_turns)
@@ -181,6 +202,13 @@ class OpenManusAPI:
                 "github": {"name": "GitHub", "status": "connected" if os.getenv("GITHUB_ENABLED", "false").lower() == "true" else "disabled"},
             },
         }
+    def workspace(self, project: str) -> dict[str, Any]:
+        return {
+            "project": project,
+            "root": str(self.coding_workspace._project(project)),
+            "tree": self.coding_workspace.file_tree({"project": project}),
+            "tools": ["coding_write_file", "coding_run_tests", "coding_run_build", "coding_snapshot", "coding_export_project", "coding_start_preview"],
+        }
 
     def add_attachment(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         path = str(body.get("path", "")).strip()
@@ -250,7 +278,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return parsed.path, [unquote(part) for part in parsed.path.split("/") if part], parse_qs(parsed.query)
 
     def do_GET(self) -> None:
-        path, parts, _ = self._route()
+        path, parts, query = self._route()
         try:
             if path == "/api/health":
                 self._send_json(asyncio.run(self.api.health()))
@@ -263,6 +291,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/catalog":
                 self._send_json(self.api.catalog())
+                return
+            if path == "/api/workspace":
+                project = (query.get("project") or [""])[0]
+                self._send_json(self.api.workspace(project))
                 return
             self._serve_static(path)
         except Exception as exc:

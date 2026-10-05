@@ -43,6 +43,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 10 research boundary
 `backend/research` exposes search, page extraction, source collection, citation tracking, and optional Playwright dynamic inspection as controlled tools. DeepSeek explicitly invokes those tools, decides whether additional research is needed, and delegates collected evidence to the `research` role. Qwen 2.5:3b returns structured evidence-review findings; it never becomes the user-facing assistant and never replaces DeepSeek's verification or synthesis.
 
+## Phase 11 coding boundary
+`backend/coding` exposes a project-scoped workspace for Qwen2.5-Coder:7b. File edits, dependency operations, tests, builds, snapshots, exports, and preview processes are controlled executor tools with path, command, timeout, and lifecycle guards. Failed logs return through DeepSeek for a bounded repair cycle. Qwen2.5-Coder:7b is never substituted for Qwen 2.5:3b research and never becomes the primary assistant.
+
 ```text
 User
   -> DeepSeek controller

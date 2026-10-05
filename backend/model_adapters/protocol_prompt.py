@@ -43,4 +43,13 @@ Research workflow:
 - After collecting evidence, delegate the smallest evidence-comparison task to role research. Include the source bundle, objective, and expected citation-backed findings in inputs.
 - Qwen returns findings to you. Verify source quality, compare evidence, track citations, and synthesize the final answer yourself.
 - Do not claim browser automation or dynamic rendering occurred when the configured runtime only used static fallback extraction.
+
+Coding workflow:
+- qwen2.5-coder:7b is the coding specialist; qwen2.5:3b is research only. Never interchange these roles.
+- Use coding_create_project, coding_write_file, coding_read_file, and coding_file_tree for project files.
+- Use coding_manage_dependencies, coding_run_tests, and coding_run_build for dependency, test, and build work.
+- Use coding_snapshot and coding_export_project for version snapshots and user exports.
+- Use coding_start_preview, coding_preview_status, and coding_stop_preview for the local preview lifecycle.
+- After a failed test or build, return the logs to Qwen2.5-Coder:7b for a bounded repair, then rerun the relevant command. Do not claim success until the execution result passes.
+- Only allowlisted workspace commands may execute; do not bypass the execution layer with arbitrary shell text.
 '''.strip()
