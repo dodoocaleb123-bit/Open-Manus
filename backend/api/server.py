@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from conversation import DeepSeekConversationLoop
 from attachments import AttachmentPipeline
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
+from research import ResearchToolset
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
 
 FRONTEND_ROOT = Path(__file__).resolve().parents[2] / "frontend"
@@ -70,8 +71,16 @@ class OpenManusAPI:
     ) -> None:
         self.store = store or (executor.store if executor is not None else SQLiteStateStore.from_environment())
         self.attachments = AttachmentPipeline(self.store)
+        research_tools = ResearchToolset()
+        default_tools = tuple(
+            ToolSpec(name=name, handler=handler, description=f"Qwen research tool: {name}")
+            for name, handler in research_tools.handlers().items()
+        )
         registry = registry or (executor.registry if executor is not None else self._default_registry())
-        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools)
+        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools)
+        if executor is not None:
+            for tool in default_tools:
+                self.executor.register_tool(tool)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
         self.loop = DeepSeekConversationLoop(self.controller, self.executor, max_turns=max_turns)
         self._task_lock = threading.Lock()

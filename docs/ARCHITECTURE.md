@@ -40,6 +40,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 9 attachment boundary
 `backend/attachments` validates and stores task-scoped files, performs deterministic local safety checks, extracts bounded text or preview metadata, and injects only a safe attachment description into the DeepSeek conversation. DeepSeek decides whether to delegate to the `vision` role. The executor formats Gemma's response as structured findings before returning it to DeepSeek; uploads never speak directly as a second chatbot.
 
+## Phase 10 research boundary
+`backend/research` exposes search, page extraction, source collection, citation tracking, and optional Playwright dynamic inspection as controlled tools. DeepSeek explicitly invokes those tools, decides whether additional research is needed, and delegates collected evidence to the `research` role. Qwen 2.5:3b returns structured evidence-review findings; it never becomes the user-facing assistant and never replaces DeepSeek's verification or synthesis.
+
 ```text
 User
   -> DeepSeek controller

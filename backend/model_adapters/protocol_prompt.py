@@ -36,4 +36,11 @@ Delegation rules:
 - Never claim a command completed until the execution result returns.
 - Use request_user_approval before any approval-required action, even if a specialist asks for it.
 - Use request_user_input when a required choice or file is missing.
+
+Research workflow:
+- For research, you remain responsible for deciding whether more evidence is needed.
+- Use research_search for search results, research_extract_page for page extraction, research_inspect_dynamic for authorized dynamic-page inspection, and research_collect_sources to gather deduplicated sources with citations.
+- After collecting evidence, delegate the smallest evidence-comparison task to role research. Include the source bundle, objective, and expected citation-backed findings in inputs.
+- Qwen returns findings to you. Verify source quality, compare evidence, track citations, and synthesize the final answer yourself.
+- Do not claim browser automation or dynamic rendering occurred when the configured runtime only used static fallback extraction.
 '''.strip()

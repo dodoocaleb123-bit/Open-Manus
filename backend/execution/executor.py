@@ -168,7 +168,12 @@ class ControlledExecutor:
         )
         self._record_activity(task.task_id, "delegated_call", {"role": role.value, "objective": objective, "run_id": run.run_id})
         response = await adapter.generate(request)
-        output = self._structured_vision_findings(response.content) if role is ModelRole.VISION else response.content
+        if role is ModelRole.VISION:
+            output = self._structured_vision_findings(response.content)
+        elif role is ModelRole.RESEARCH and ("sources" in inputs or "citations" in inputs):
+            output = self._structured_research_findings(response.content, inputs)
+        else:
+            output = response.content
         self._record_activity(task.task_id, "model_result", {"role": role.value, "run_id": run.run_id, "content": output})
         self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=output)
         self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=output, last_error=None)
@@ -234,6 +239,27 @@ class ControlledExecutor:
             findings = {"raw": content}
         return json.dumps(
             {"specialist": "gemma", "analysis_type": "visual_attachment", "findings": findings},
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _structured_research_findings(content: str, inputs: Mapping[str, Any]) -> str:
+        try:
+            parsed = json.loads(content)
+            findings = parsed if isinstance(parsed, dict) else {"summary": parsed}
+        except json.JSONDecodeError:
+            findings = {"summary": content}
+        citations = inputs.get("citations", [])
+        if not isinstance(citations, list):
+            citations = list(citations) if isinstance(citations, tuple) else []
+        return json.dumps(
+            {
+                "specialist": "qwen2.5:3b",
+                "analysis_type": "research_evidence_review",
+                "findings": findings,
+                "citations": citations,
+                "source_count": len(inputs.get("sources", [])) if isinstance(inputs.get("sources", []), list) else 0,
+            },
             ensure_ascii=False,
         )
 
