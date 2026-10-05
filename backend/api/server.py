@@ -182,8 +182,8 @@ class OpenManusAPI:
         return {"attachment": record.to_dict()}
 
     def add_uploaded_attachment(self, task_id: str, filename: str, content_type: str | None, data: bytes) -> dict[str, Any]:
-        if len(data) > 25 * 1024 * 1024:
-            raise ValueError("uploaded file is larger than 25 MB")
+        if len(data) > 250 * 1024 * 1024:
+            raise ValueError("uploaded file is larger than 250 MB")
         record = self.attachments.ingest(task_id, filename, content_type, data)
         self.loop.add_attachment_context(task_id, record.to_dict())
         return {"attachment": record.to_dict()}
@@ -226,8 +226,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def _read_multipart_file(self) -> tuple[str, str | None, bytes]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 26 * 1024 * 1024:
-            raise ValueError("multipart request is larger than 26 MB")
+        if length > 251 * 1024 * 1024:
+            raise ValueError("multipart request is larger than 251 MB")
         raw = self.rfile.read(length)
         headers = f"Content-Type: {self.headers.get('Content-Type', '')}\r\nMIME-Version: 1.0\r\n\r\n".encode()
         message = BytesParser(policy=policy.default).parsebytes(headers + raw)

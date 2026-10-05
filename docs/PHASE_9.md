@@ -28,7 +28,7 @@ DeepSeek answers, explains, or delegates the next step
 
 ## Secure local storage
 
-- Maximum attachment size: 25 MB
+- Maximum attachment size: 250 MB
 - Task-scoped directories under `workspace/attachments/<task_id>/`
 - Stored files receive restrictive local permissions
 - Filenames are reduced to safe basename characters

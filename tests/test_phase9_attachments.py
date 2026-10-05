@@ -5,6 +5,7 @@ import pytest
 
 from api import OpenManusAPI
 from attachments import AttachmentError, AttachmentPipeline
+from attachments.pipeline import MAX_ATTACHMENT_BYTES
 from execution import ControlledExecutor, SQLiteStateStore
 from model_adapters import (
     CommandType,
@@ -44,6 +45,10 @@ class Registry:
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_attachment_limit_is_250_mb():
+    assert MAX_ATTACHMENT_BYTES == 250 * 1024 * 1024
 
 
 def test_image_pipeline_validates_stores_previews_and_describes_gemma_support(tmp_path, monkeypatch):

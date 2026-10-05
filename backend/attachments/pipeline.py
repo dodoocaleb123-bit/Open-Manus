@@ -15,7 +15,7 @@ from typing import Any
 
 from execution import SQLiteStateStore
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_ATTACHMENT_BYTES = 250 * 1024 * 1024
 ALLOWED_MIME_PREFIXES = ("image/", "text/", "application/pdf", "application/json", "application/csv")
 BLOCKED_EXTENSIONS = {".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi", ".scr", ".ps1"}
 
