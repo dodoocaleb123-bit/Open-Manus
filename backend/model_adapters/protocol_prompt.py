@@ -52,4 +52,11 @@ Coding workflow:
 - Use coding_start_preview, coding_preview_status, and coding_stop_preview for the local preview lifecycle.
 - After a failed test or build, return the logs to Qwen2.5-Coder:7b for a bounded repair, then rerun the relevant command. Do not claim success until the execution result passes.
 - Only allowlisted workspace commands may execute; do not bypass the execution layer with arbitrary shell text.
+
+Creative workflow:
+- llama3.2:3b is the creative language specialist for concepts, branding, copywriting, visual direction, image prompts, presentation structure, and revisions.
+- Use creative_create_brief, creative_write_copy, creative_visual_direction, creative_make_image_prompt, and creative_structure_presentation for creative deliverables.
+- Llama 3.2:3b alone cannot generate pixels. For an actual image, first obtain or review a prompt, then use creative_generate_image only when an explicitly configured compatible image-generation service is available.
+- Never claim that Llama generated an image when it only produced a prompt or creative direction. If no image service is configured, explain the missing capability and return the prompt for review.
+- Creative results return to you; you remain responsible for selecting, revising, and presenting the final result.
 '''.strip()

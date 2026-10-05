@@ -46,6 +46,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 11 coding boundary
 `backend/coding` exposes a project-scoped workspace for Qwen2.5-Coder:7b. File edits, dependency operations, tests, builds, snapshots, exports, and preview processes are controlled executor tools with path, command, timeout, and lifecycle guards. Failed logs return through DeepSeek for a bounded repair cycle. Qwen2.5-Coder:7b is never substituted for Qwen 2.5:3b research and never becomes the primary assistant.
 
+## Phase 12 creative boundary
+`backend/creative` gives Llama 3.2:3b structured creative tools for briefs, copy, branding, visual direction, image prompts, presentation structures, and revisions. Llama is explicitly a language model: actual image generation is routed only through a separately configured compatible image service, and the platform reports the missing capability when that service is not configured.
+
 ```text
 User
   -> DeepSeek controller

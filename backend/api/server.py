@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from conversation import DeepSeekConversationLoop
 from attachments import AttachmentPipeline
 from coding import CodingWorkspace
+from creative import CreativeToolset
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
 from research import ResearchToolset
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
@@ -74,6 +75,7 @@ class OpenManusAPI:
         self.attachments = AttachmentPipeline(self.store)
         coding_workspace = CodingWorkspace(os.getenv("OPENMANUS_PROJECTS_ROOT", "./workspace/projects"))
         self.coding_workspace = coding_workspace
+        creative_tools = CreativeToolset()
         research_tools = ResearchToolset()
         default_tools = tuple(
             ToolSpec(name=name, handler=handler, description=f"Qwen research tool: {name}")
@@ -97,10 +99,14 @@ class OpenManusAPI:
                 "coding_preview_status": "preview_status",
             }.items()
         )
+        creative_tool_specs = tuple(
+            ToolSpec(name=name, handler=handler, description=f"Llama creative tool: {name}")
+            for name, handler in creative_tools.handlers().items()
+        )
         registry = registry or (executor.registry if executor is not None else self._default_registry())
-        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools)
+        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools + creative_tool_specs)
         if executor is not None:
-            for tool in default_tools + coding_tools:
+            for tool in default_tools + coding_tools + creative_tool_specs:
                 self.executor.register_tool(tool)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
         self.loop = DeepSeekConversationLoop(self.controller, self.executor, max_turns=max_turns)

@@ -30,7 +30,7 @@ This repository currently provides:
 - Reproducible Python project metadata and environment checks
 - No secrets committed to the repository
 
-Phase 2 adds typed OpenAI-compatible adapters and a strict registry for the five model roles. Phase 3 adds the structured platform knowledge registry and the DeepSeek-only controller facade. Phase 4 adds DeepSeek's validated one-command-at-a-time controller protocol. Phase 5 adds the non-intelligent controlled execution and state layer. Phase 6 connects them in a local DeepSeek conversation loop. Phase 7 adds local SQLite persistence and restart-safe context reconstruction. Phase 8 adds the local JSON API and browser GUI. Phase 9 adds secure attachment ingestion, previews, extracted text, and explicit Gemma visual-analysis workflows. Phase 10 adds Qwen 2.5:3b research tools, source collection, citations, page extraction, and optional dynamic browser inspection. Phase 11 adds the controlled Qwen2.5-Coder:7b workspace, tests/builds, repair logs, previews, snapshots, and exports.
+Phase 2 adds typed OpenAI-compatible adapters and a strict registry for the five model roles. Phase 3 adds the structured platform knowledge registry and the DeepSeek-only controller facade. Phase 4 adds DeepSeek's validated one-command-at-a-time controller protocol. Phase 5 adds the non-intelligent controlled execution and state layer. Phase 6 connects them in a local DeepSeek conversation loop. Phase 7 adds local SQLite persistence and restart-safe context reconstruction. Phase 8 adds the local JSON API and browser GUI. Phase 9 adds secure attachment ingestion, previews, extracted text, and explicit Gemma visual-analysis workflows. Phase 10 adds Qwen 2.5:3b research tools, source collection, citations, page extraction, and optional dynamic browser inspection. Phase 11 adds the controlled Qwen2.5-Coder:7b workspace, tests/builds, repair logs, previews, snapshots, and exports. Phase 12 adds Llama 3.2:3b creative briefs, copy, visual direction, image prompts, presentation structures, and an explicit external image-service boundary.
 
 ## Quick start
 
@@ -64,4 +64,5 @@ Install its dependencies in an isolated environment first; see `backend/openmanu
 - [Phase 9 attachment and Gemma guide](docs/PHASE_9.md)
 - [Phase 10 research workflow guide](docs/PHASE_10.md)
 - [Phase 11 coding workflow guide](docs/PHASE_11.md)
+- [Phase 12 creative workflow guide](docs/PHASE_12.md)
 - [GUI behavior reference](docs/references/gui-behavior-analysis.md)
