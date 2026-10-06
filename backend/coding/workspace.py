@@ -39,6 +39,9 @@ class PreviewProcess:
     port: int
     process: subprocess.Popen[str]
     started_at: float
+    log_path: str
+    log_handle: Any
+    viewport: str = "desktop"
 
 
 class CodingWorkspace:
@@ -159,10 +162,17 @@ class CodingWorkspace:
         port = int(arguments.get("port", 8000))
         if not 1024 <= port <= 65535:
             raise CodingWorkspaceError("preview port must be between 1024 and 65535")
-        process = subprocess.Popen(command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, env=self._safe_environment())
+        viewport = str(arguments.get("viewport", "desktop"))
+        if viewport not in {"desktop", "mobile"}:
+            raise CodingWorkspaceError("viewport must be desktop or mobile")
+        log_dir = project / ".openmanus" / "previews"
+        log_dir.mkdir(parents=True, exist_ok=True)
         preview_id = f"preview_{uuid.uuid4().hex}"
-        self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time())
-        return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting"}
+        log_path = log_dir / f"{preview_id}.log"
+        log_handle = log_path.open("a", encoding="utf-8")
+        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=self._safe_environment())
+        self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time(), str(log_path), log_handle, viewport)
+        return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting", "viewport": viewport, "viewports": {"desktop": {"width": 1440, "height": 900}, "mobile": {"width": 390, "height": 844}}}
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         preview_id = str(arguments.get("preview_id", ""))
@@ -174,6 +184,7 @@ class CodingWorkspace:
             preview.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             preview.process.kill()
+        preview.log_handle.close()
         self._previews.pop(preview_id, None)
         return {"preview_id": preview_id, "status": "stopped"}
 
@@ -182,7 +193,14 @@ class CodingWorkspace:
         preview = self._previews.get(preview_id)
         if preview is None:
             raise CodingWorkspaceError("preview does not exist")
-        return {"preview_id": preview_id, "port": preview.port, "status": "running" if preview.process.poll() is None else "stopped", "returncode": preview.process.poll()}
+        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "port": preview.port, "status": "running" if preview.process.poll() is None else "stopped", "returncode": preview.process.poll(), "url": f"http://127.0.0.1:{preview.port}", "viewport": preview.viewport, "log_path": preview.log_path}
+    def console_output(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        preview_id = str(arguments.get("preview_id", ""))
+        preview = self._previews.get(preview_id)
+        if preview is None:
+            raise CodingWorkspaceError("preview does not exist")
+        path = Path(preview.log_path)
+        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "status": "running" if preview.process.poll() is None else "stopped", "output": path.read_text(encoding="utf-8", errors="replace")[-50000:] if path.exists() else "", "log_path": str(path)}
 
     def _project(self, value: Any) -> Path:
         name = str(value or "").strip()

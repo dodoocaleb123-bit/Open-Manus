@@ -32,6 +32,8 @@ class PlatformContext:
         "send_external_message",
         "delete_user_data",
         "use_or_change_sensitive_secrets",
+        "modify_connected_service",
+        "make_irreversible_change",
     )
 
 
@@ -51,6 +53,9 @@ class PlatformKnowledge:
         "creative content and design direction",
         "authorized file and sandbox operations",
         "task progress reporting and cancellation",
+        "live local website previews with desktop and mobile viewport modes",
+        "screenshots, code views, console output, and typed project artifacts",
+        "downloadable project archives",
     )
     unavailable_until_integrated: tuple[str, ...] = (
         "GitHub account connection and repository push",
@@ -59,7 +64,6 @@ class PlatformKnowledge:
         "Slack, Notion, email, and calendar connectors",
         "actual image generation through a dedicated image backend",
         "PowerPoint export",
-        "production GUI and live preview workspace",
     )
 
     def system_prompt(self, context: PlatformContext | None = None) -> str:

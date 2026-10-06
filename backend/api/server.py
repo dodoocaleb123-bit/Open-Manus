@@ -21,6 +21,7 @@ from coding import CodingWorkspace
 from creative import CreativeToolset
 from security import SecureActions
 from github import GitHubIntegration
+from previews import PreviewService
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
 from research import ResearchToolset
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
@@ -80,6 +81,8 @@ class OpenManusAPI:
         secure_actions = SecureActions(coding_workspace)
         github = GitHubIntegration(coding_workspace)
         self.github = github
+        previews = PreviewService(coding_workspace, store=self.store)
+        self.previews = previews
         creative_tools = CreativeToolset()
         research_tools = ResearchToolset()
         default_tools = tuple(
@@ -102,6 +105,7 @@ class OpenManusAPI:
                 "coding_start_preview": "start_preview",
                 "coding_stop_preview": "stop_preview",
                 "coding_preview_status": "preview_status",
+                "coding_console_output": "console_output",
             }.items()
         )
         creative_tool_specs = tuple(
@@ -116,10 +120,14 @@ class OpenManusAPI:
             ToolSpec(name=name, handler=handler, approval_action=approval_action, description=description)
             for name, handler, approval_action, description in github.specs()
         )
+        preview_tool_specs = tuple(
+            ToolSpec(name=name, handler=handler, description=description)
+            for name, handler, description in previews.specs()
+        )
         registry = registry or (executor.registry if executor is not None else self._default_registry())
-        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs)
+        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs + preview_tool_specs)
         if executor is not None:
-            for tool in default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs:
+            for tool in default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs + preview_tool_specs:
                 self.executor.register_tool(tool)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
         self.loop = DeepSeekConversationLoop(self.controller, self.executor, max_turns=max_turns)
@@ -226,8 +234,12 @@ class OpenManusAPI:
             "project": project,
             "root": str(self.coding_workspace._project(project)),
             "tree": self.coding_workspace.file_tree({"project": project}),
-            "tools": ["coding_write_file", "coding_run_tests", "coding_run_build", "coding_snapshot", "coding_export_project", "coding_start_preview"],
+            "tools": ["coding_write_file", "coding_run_tests", "coding_run_build", "coding_snapshot", "coding_export_project", "coding_start_preview", "preview_manifest", "preview_screenshot", "preview_code_view", "preview_console"],
         }
+    def download_project(self, project: str) -> tuple[bytes, str]:
+        export = self.coding_workspace.export_project({"project": project})
+        path = Path(export["path"])
+        return path.read_bytes(), path.name
 
     def add_attachment(self, task_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         path = str(body.get("path", "")).strip()
@@ -267,6 +279,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_download(self, data: bytes, filename: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
@@ -314,6 +334,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/workspace":
                 project = (query.get("project") or [""])[0]
                 self._send_json(self.api.workspace(project))
+                return
+            if path == "/api/workspace/download":
+                project = (query.get("project") or [""])[0]
+                data, filename = self.api.download_project(project)
+                self._send_download(data, filename)
                 return
             self._serve_static(path)
         except Exception as exc:
