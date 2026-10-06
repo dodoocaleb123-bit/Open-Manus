@@ -20,6 +20,7 @@ from attachments import AttachmentPipeline
 from coding import CodingWorkspace
 from creative import CreativeToolset
 from security import SecureActions
+from github import GitHubIntegration
 from execution import ControlledExecutor, SQLiteStateStore, TaskStatus, ToolSpec
 from research import ResearchToolset
 from model_adapters import DeepSeekController, ModelRegistry, ModelRole, PlatformContext
@@ -77,6 +78,8 @@ class OpenManusAPI:
         coding_workspace = CodingWorkspace(os.getenv("OPENMANUS_PROJECTS_ROOT", "./workspace/projects"))
         self.coding_workspace = coding_workspace
         secure_actions = SecureActions(coding_workspace)
+        github = GitHubIntegration(coding_workspace)
+        self.github = github
         creative_tools = CreativeToolset()
         research_tools = ResearchToolset()
         default_tools = tuple(
@@ -109,10 +112,14 @@ class OpenManusAPI:
             ToolSpec(name=spec.name, handler=spec.handler, approval_action=spec.approval_action, description=spec.description)
             for spec in secure_actions.specs()
         )
+        github_tool_specs = tuple(
+            ToolSpec(name=name, handler=handler, approval_action=approval_action, description=description)
+            for name, handler, approval_action, description in github.specs()
+        )
         registry = registry or (executor.registry if executor is not None else self._default_registry())
-        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools + creative_tool_specs + secure_tool_specs)
+        self.executor = executor or ControlledExecutor(registry, store=self.store, tools=tools + default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs)
         if executor is not None:
-            for tool in default_tools + coding_tools + creative_tool_specs + secure_tool_specs:
+            for tool in default_tools + coding_tools + creative_tool_specs + secure_tool_specs + github_tool_specs:
                 self.executor.register_tool(tool)
         self.controller = controller or DeepSeekController(registry.get(ModelRole.CONTROLLER))
         self.loop = DeepSeekConversationLoop(self.controller, self.executor, max_turns=max_turns)

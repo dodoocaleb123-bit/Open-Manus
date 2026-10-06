@@ -52,6 +52,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 13 secure-action boundary
 `backend/security` defines approval-gated tools for GitHub pushes, external messages, publishing, connected-service modifications, file deletion, secret use, and irreversible changes. The executor blocks each tool until the exact matching approval is recorded, while read-only previews remain available before approval. Rejections, approvals, commands, and results are persisted for auditability.
 
+## Phase 14 GitHub boundary
+`backend/github` provides authenticated `gh`-CLI repository discovery, branch selection, local diff inspection, explicit-file local commits, and push/retry results. The GitHub tools are registered with the DeepSeek-controlled executor; Qwen2.5-Coder:7b can be delegated coding work but cannot bypass DeepSeek. Push and retry tools carry the existing `push_to_github` approval gate and report commit URLs only after successful remote execution.
+
 ```text
 User
   -> DeepSeek controller
