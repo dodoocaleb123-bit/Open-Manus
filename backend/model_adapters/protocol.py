@@ -36,6 +36,8 @@ _APPROVAL_ACTIONS = frozenset(
         "send_external_message",
         "delete_user_data",
         "use_or_change_sensitive_secrets",
+        "modify_connected_service",
+        "make_irreversible_change",
     }
 )
 

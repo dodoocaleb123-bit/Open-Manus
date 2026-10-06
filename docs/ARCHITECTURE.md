@@ -49,6 +49,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 12 creative boundary
 `backend/creative` gives Llama 3.2:3b structured creative tools for briefs, copy, branding, visual direction, image prompts, presentation structures, and revisions. Llama is explicitly a language model: actual image generation is routed only through a separately configured compatible image service, and the platform reports the missing capability when that service is not configured.
 
+## Phase 13 secure-action boundary
+`backend/security` defines approval-gated tools for GitHub pushes, external messages, publishing, connected-service modifications, file deletion, secret use, and irreversible changes. The executor blocks each tool until the exact matching approval is recorded, while read-only previews remain available before approval. Rejections, approvals, commands, and results are persisted for auditability.
+
 ```text
 User
   -> DeepSeek controller
