@@ -58,6 +58,9 @@ Phase 5 introduced a thread-safe in-memory store. Phase 7 adds `SQLiteStateStore
 ## Phase 15 preview and artifact boundary
 `backend/previews` presents confirmed local project state through readiness manifests, desktop/mobile viewport metadata, optional Playwright screenshots, read-only code views, persisted preview console output, typed artifact registration, and archive downloads. DeepSeek decides when the preview is ready and which artifact or view to show; the presentation layer never invents a preview or artifact that a tool has not confirmed.
 
+## Phase 16 orchestration and integrations boundary
+`backend/orchestration` derives a read-only collaboration dashboard from persisted DeepSeek decisions, specialist activity, delegation edges, and approvals. It never plans or executes work. `backend/automation` persists local interval and one-time schedules and dispatches due instructions back through the normal DeepSeek conversation loop. `backend/integrations` normalizes events from email, calendar, Slack, Notion, storage, notifications, maps, and commerce into untrusted payloads routed to DeepSeek. It exposes readiness and prepared-action metadata but does not bypass the controller or invent provider credentials.
+
 ```text
 User
   -> DeepSeek controller

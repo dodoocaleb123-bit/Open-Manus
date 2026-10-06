@@ -56,6 +56,9 @@ class PlatformKnowledge:
         "live local website previews with desktop and mobile viewport modes",
         "screenshots, code views, console output, and typed project artifacts",
         "downloadable project archives",
+        "multi-agent collaboration status and delegation dashboards",
+        "durable local scheduled DeepSeek tasks",
+        "event intake boundaries for email, calendar, Slack, Notion, storage, notifications, maps, and commerce",
     )
     unavailable_until_integrated: tuple[str, ...] = (
         "GitHub account connection and repository push",
