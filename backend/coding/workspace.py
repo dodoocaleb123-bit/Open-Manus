@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import shutil
 import subprocess
 import time
@@ -90,12 +91,16 @@ class CodingWorkspace:
         for path in sorted(project.rglob("*")):
             if ".openmanus" in path.parts or ".git" in path.parts or "node_modules" in path.parts:
                 continue
+            if path.is_symlink() and project not in path.resolve().parents:
+                raise CodingWorkspaceError("symlink escapes project")
             result.append({"path": str(path.relative_to(project)), "kind": "directory" if path.is_dir() else "file", "size": path.stat().st_size if path.is_file() else None})
         return result
 
     def manage_dependencies(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         manager = str(arguments.get("manager", "")).strip()
         packages = [str(item) for item in arguments.get("packages", [])]
+        if any(not item or item.startswith("-") or any(ch in item for ch in ";&|`$\n\r") for item in packages):
+            raise CodingWorkspaceError("dependency names contain unsafe characters")
         if manager == "npm":
             command = ["npm", "install", *packages]
         elif manager in {"pip", "pip3"}:
@@ -125,7 +130,7 @@ class CodingWorkspace:
         timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 600)
         started = time.monotonic()
         try:
-            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment())
+            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment(), start_new_session=True, preexec_fn=self._resource_limits)
             status = "passed" if completed.returncode == 0 else "failed"
             result = CommandResult(command, str(project), completed.returncode, completed.stdout[-50000:], completed.stderr[-50000:], time.monotonic() - started, status)
         except subprocess.TimeoutExpired as exc:
@@ -236,6 +241,15 @@ class CodingWorkspace:
     def _safe_environment() -> dict[str, str]:
         allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH"}
         return {key: value for key, value in os.environ.items() if key in allowed}
+
+    @staticmethod
+    def _resource_limits() -> None:
+        """Apply conservative POSIX limits inside child processes; no shell is used."""
+        cpu = max(1, int(os.getenv("OPENMANUS_COMMAND_CPU_SECONDS", "120")))
+        memory = max(128, int(os.getenv("OPENMANUS_COMMAND_MEMORY_MB", "1024"))) * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     @staticmethod
     def _zip_project(project: Path, target: Path) -> None:

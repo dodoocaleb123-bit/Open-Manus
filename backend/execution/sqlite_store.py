@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from model_adapters import CommandType, ControllerCommand, PlatformContext
+from security.secrets import mask_secrets
 
 from .store import InMemoryStateStore
 from .types import CommandRun, RunStatus, TaskRecord, TaskStatus
@@ -123,6 +124,25 @@ class SQLiteStateStore(InMemoryStateStore):
                     task_id TEXT NOT NULL,
                     activity_type TEXT NOT NULL,
                     payload TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT,
+                    actor TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    details TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS approval_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    approved INTEGER NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
                 """
@@ -290,6 +310,69 @@ class SQLiteStateStore(InMemoryStateStore):
             rows = self._db.execute(query, params).fetchall()
         return tuple(
             {"type": row["activity_type"], "payload": _decode(row["payload"], {}), "created_at": row["created_at"]}
+            for row in rows
+        )
+
+    def record_audit(
+        self,
+        event_type: str,
+        *,
+        actor: str = "system",
+        resource: str = "",
+        outcome: str = "allowed",
+        details: Mapping[str, Any] | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """Persist a redacted security event without storing secret values."""
+        with self._db_lock:
+            self._db.execute(
+                "INSERT INTO audit_log(task_id, actor, event_type, resource, outcome, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (task_id, actor, event_type, resource, outcome, _encode(mask_secrets(details or {})), time.time()),
+            )
+            self._db.commit()
+
+    def list_audit(self, task_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        query = "SELECT task_id, actor, event_type, resource, outcome, details, created_at FROM audit_log"
+        params: tuple[Any, ...] = ()
+        if task_id:
+            query += " WHERE task_id=?"
+            params = (task_id,)
+        query += " ORDER BY id"
+        with self._db_lock:
+            rows = self._db.execute(query, params).fetchall()
+        return tuple(
+            {
+                "task_id": row["task_id"],
+                "actor": row["actor"],
+                "event_type": row["event_type"],
+                "resource": row["resource"],
+                "outcome": row["outcome"],
+                "details": _decode(row["details"], {}),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        )
+
+    def record_approval(self, task_id: str, action: str, approved: bool, actor: str, reason: str = "") -> None:
+        self._ensure_task(task_id)
+        with self._db_lock:
+            self._db.execute(
+                "INSERT INTO approval_records(task_id, action, approved, actor, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (task_id, action, int(approved), actor, reason, time.time()),
+            )
+            self._db.commit()
+
+    def list_approvals(self, task_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        query = "SELECT task_id, action, approved, actor, reason, created_at FROM approval_records"
+        params: tuple[Any, ...] = ()
+        if task_id:
+            query += " WHERE task_id=?"
+            params = (task_id,)
+        query += " ORDER BY id"
+        with self._db_lock:
+            rows = self._db.execute(query, params).fetchall()
+        return tuple(
+            {"task_id": row["task_id"], "action": row["action"], "approved": bool(row["approved"]), "actor": row["actor"], "reason": row["reason"], "created_at": row["created_at"]}
             for row in rows
         )
 

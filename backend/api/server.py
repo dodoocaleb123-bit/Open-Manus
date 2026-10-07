@@ -19,7 +19,14 @@ from conversation import DeepSeekConversationLoop
 from attachments import AttachmentPipeline
 from coding import CodingWorkspace
 from creative import CreativeToolset
-from security import SecureActions
+from security import (
+    ProjectAccessController,
+    RateLimiter,
+    SecretStore,
+    SecretStoreError,
+    SecureActions,
+    TokenAuthenticator,
+)
 from github import GitHubIntegration
 from previews import PreviewService
 from orchestration import OrchestrationDashboard
@@ -78,6 +85,13 @@ class OpenManusAPI:
         tools: tuple[ToolSpec, ...] = (),
     ) -> None:
         self.store = store or (executor.store if executor is not None else SQLiteStateStore.from_environment())
+        self.authenticator = TokenAuthenticator()
+        self.rate_limiter = RateLimiter(int(os.getenv("OPENMANUS_RATE_LIMIT", "120")), int(os.getenv("OPENMANUS_RATE_WINDOW_SECONDS", "60")))
+        self.project_access = ProjectAccessController()
+        state_db = getattr(self.store, "database_path", "./workspace/openmanus.sqlite3")
+        secret_db = str(Path(state_db).with_suffix(".secrets.sqlite3")) if state_db != ":memory:" else ":memory:"
+        secret_key = os.getenv("OPENMANUS_SECRET_KEY", "")
+        self.secret_store = SecretStore(secret_db, secret_key) if secret_key else None
         self.attachments = AttachmentPipeline(self.store)
         coding_workspace = CodingWorkspace(os.getenv("OPENMANUS_PROJECTS_ROOT", "./workspace/projects"))
         self.coding_workspace = coding_workspace
@@ -185,6 +199,8 @@ class OpenManusAPI:
             payload["attachments"] = _jsonable(self.store.list_attachments(task_id))
             payload["artifacts"] = _jsonable(self.store.list_artifacts(task_id))
             payload["context"] = _jsonable(self.store.load_context(task_id))
+            payload["audit"] = _jsonable(self.store.list_audit(task_id)) if hasattr(self.store, "list_audit") else []
+            payload["approvals"] = _jsonable(self.store.list_approvals(task_id)) if hasattr(self.store, "list_approvals") else []
         else:
             payload["messages"] = []
             payload["events"] = []
@@ -273,6 +289,7 @@ class OpenManusAPI:
         result = asyncio.run(self.create_task({"message": instruction, "context": {"connected_integrations": (provider,), "task_status": "event_received"}}))
         return {"event": event, "task": result}
     def workspace(self, project: str) -> dict[str, Any]:
+        self.project_access.authorize(project, getattr(self, "_principal", None) or self.authenticator.authenticate(None), "project.read")
         return {
             "project": project,
             "root": str(self.coding_workspace._project(project)),
@@ -307,6 +324,19 @@ class OpenManusAPI:
             raise ValueError("artifact_id and path are required")
         self.store.record_artifact(task_id, artifact_id, path, artifact_type, body.get("metadata", {}))
         return {"artifact": self.store.list_artifacts(task_id)[-1]}
+
+    def list_audit(self, task_id: str | None = None) -> dict[str, Any]:
+        return {"audit": _jsonable(self.store.list_audit(task_id) if hasattr(self.store, "list_audit") else ())}
+
+    def list_secrets(self, owner: str = "local") -> dict[str, Any]:
+        if self.secret_store is None:
+            return {"enabled": False, "secrets": []}
+        return {"enabled": True, "secrets": _jsonable(self.secret_store.describe(owner))}
+
+    def put_secret(self, body: Mapping[str, Any], owner: str = "local") -> dict[str, Any]:
+        if self.secret_store is None:
+            raise SecretStoreError("safe-secret panel is disabled; configure OPENMANUS_SECRET_KEY")
+        return {"secret": self.secret_store.put(owner, str(body.get("label", "")), str(body.get("value", "")))}
 
 
 class _RequestHandler(BaseHTTPRequestHandler):
@@ -359,9 +389,25 @@ class _RequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         return parsed.path, [unquote(part) for part in parsed.path.split("/") if part], parse_qs(parsed.query)
 
+    def _authorize_request(self, path: str) -> bool:
+        if not path.startswith("/api/"):
+            return True
+        decision = self.api.rate_limiter.check(self.client_address[0])
+        if not decision.allowed:
+            self._send_json({"error": "rate limit exceeded", "retry_after": decision.retry_after}, HTTPStatus.TOO_MANY_REQUESTS)
+            return False
+        try:
+            self.api._principal = self.api.authenticator.authenticate(self.headers.get("Authorization"))
+        except PermissionError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.UNAUTHORIZED)
+            return False
+        return True
+
     def do_GET(self) -> None:
         path, parts, query = self._route()
         try:
+            if not self._authorize_request(path):
+                return
             if path == "/api/health":
                 self._send_json(asyncio.run(self.api.health()))
                 return
@@ -384,6 +430,13 @@ class _RequestHandler(BaseHTTPRequestHandler):
             if path == "/api/integrations":
                 self._send_json(self.api.integrations.catalog())
                 return
+            if path == "/api/audit":
+                task_id = (query.get("task_id") or [None])[0]
+                self._send_json(self.api.list_audit(task_id))
+                return
+            if path == "/api/secrets":
+                self._send_json(self.api.list_secrets(self.api._principal.subject))
+                return
             if path == "/api/workspace":
                 project = (query.get("project") or [""])[0]
                 self._send_json(self.api.workspace(project))
@@ -400,6 +453,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, parts, _ = self._route()
         try:
+            if not self._authorize_request(path):
+                return
             if len(parts) == 4 and parts[:2] == ["api", "tasks"] and parts[3] == "attachments" and self.headers.get("Content-Type", "").startswith("multipart/"):
                 filename, content_type, data = self._read_multipart_file()
                 self._send_json(self.api.add_uploaded_attachment(parts[2], filename, content_type, data), HTTPStatus.CREATED)
@@ -413,6 +468,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/schedules/run-due":
                 self._send_json(self.api.run_due_schedules())
+                return
+            if path == "/api/secrets":
+                self._send_json(self.api.put_secret(body, self.api._principal.subject), HTTPStatus.CREATED)
                 return
             if len(parts) == 4 and parts[:2] == ["api", "schedules"] and parts[3] == "enabled":
                 self._send_json(self.api.scheduler.set_enabled(parts[2], bool(body.get("enabled", True))))

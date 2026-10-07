@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "DeepSeek-controlled OpenManus platform foundation"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "cryptography>=43,<51",
+]
 
 [project.optional-dependencies]
 dev = [

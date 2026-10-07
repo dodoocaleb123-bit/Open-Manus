@@ -15,6 +15,7 @@ from model_adapters import (
     ModelRequest,
     ModelRole,
 )
+from security import AuthorizationError, mask_secrets
 
 from .store import ExecutionStateError, InMemoryStateStore
 from .types import CommandRun, ExecutionResult, RunStatus, TaskRecord, TaskStatus
@@ -32,6 +33,7 @@ class ToolSpec:
     handler: ToolHandler
     approval_action: str | None = None
     description: str = ""
+    permission: str = "tool.execute"
 
 
 class ControlledExecutor:
@@ -48,10 +50,12 @@ class ControlledExecutor:
         *,
         store: InMemoryStateStore | None = None,
         tools: tuple[ToolSpec, ...] = (),
+        allowed_permissions: frozenset[str] | None = None,
     ) -> None:
         self.registry = registry
         self.store = store or InMemoryStateStore()
         self._tools = {tool.name: tool for tool in tools}
+        self.allowed_permissions = allowed_permissions
 
     def create_task(self, user_request: str) -> TaskRecord:
         return self.store.create_task(user_request)
@@ -66,11 +70,13 @@ class ControlledExecutor:
         self._ensure_command_allowed(task, command.type)
         run = self.store.create_run(task_id, command)
         self._record_activity(task_id, "command", command.to_dict())
+        self._record_audit(task_id, "command_received", command.type.value, {"command": command.to_dict()})
         try:
             result = await self._dispatch(task, run, command)
             return result
         except Exception as exc:
             self._record_activity(task_id, "error", {"command": command.to_dict(), "error": str(exc)})
+            self._record_audit(task_id, "execution_error", command.type.value, {"error": str(exc)}, outcome="denied_or_failed")
             self.store.finish_run(run.run_id, RunStatus.FAILED, error=str(exc))
             self.store.update_task(task_id, status=TaskStatus.FAILED, last_error=str(exc))
             return ExecutionResult(
@@ -95,6 +101,10 @@ class ControlledExecutor:
             approved_actions=task.approved_actions | {action},
         )
         self._record_activity(task_id, "approval", {"action": action, "approved": True})
+        self._record_audit(task_id, "approval", action, {"approved": True})
+        record_approval = getattr(self.store, "record_approval", None)
+        if record_approval is not None:
+            record_approval(task_id, action, True, "user", "approved")
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.RUNNING, output={"approved": action})
 
     async def reject(self, task_id: str, reason: str = "User rejected the approval request") -> ExecutionResult:
@@ -105,6 +115,10 @@ class ControlledExecutor:
         if task.current_run_id:
             self.store.finish_run(task.current_run_id, RunStatus.CANCELLED, error=reason)
         self._record_activity(task_id, "approval", {"approved": False, "reason": reason})
+        self._record_audit(task_id, "approval", str(pending.get("action", "")), {"approved": False, "reason": reason}, outcome="rejected")
+        record_approval = getattr(self.store, "record_approval", None)
+        if record_approval is not None:
+            record_approval(task_id, str(pending.get("action", "")), False, "user", reason)
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.CANCELLED, output={"rejected": True})
 
     async def submit_user_input(self, task_id: str, value: str) -> ExecutionResult:
@@ -184,6 +198,8 @@ class ControlledExecutor:
         spec = self._tools.get(name)
         if spec is None:
             raise ExecutionError(f"Tool is not registered: {name}")
+        if self.allowed_permissions is not None and spec.permission not in self.allowed_permissions and "*" not in self.allowed_permissions:
+            raise AuthorizationError(f"tool permission denied: {spec.permission}")
         if spec.approval_action and spec.approval_action not in task.approved_actions:
             pending = {
                 "action": spec.approval_action,
@@ -192,6 +208,7 @@ class ControlledExecutor:
             }
             self.store.finish_run(run.run_id, RunStatus.WAITING, result=pending)
             self.store.update_task(task.task_id, status=TaskStatus.WAITING_FOR_APPROVAL, pending_approval=pending)
+            self._record_audit(task.task_id, "approval_requested", spec.approval_action, {"tool": name, "summary": spec.description})
             return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.WAITING_FOR_APPROVAL, output=pending, waiting_for="approval")
         if spec.approval_action:
             task.approved_actions.discard(spec.approval_action)
@@ -199,6 +216,7 @@ class ControlledExecutor:
         if inspect.isawaitable(value):
             value = await value
         self._record_activity(task.task_id, "tool_activity", {"tool": name, "arguments": command.arguments["arguments"], "result": value})
+        self._record_audit(task.task_id, "tool_executed", name, {"arguments": command.arguments["arguments"], "result": value})
         self.store.finish_run(run.run_id, RunStatus.COMPLETED, result=value)
         self.store.update_task(task.task_id, status=TaskStatus.RUNNING, last_result=value, last_error=None)
         return ExecutionResult(task.task_id, run.run_id, True, TaskStatus.RUNNING, output=value)
@@ -229,6 +247,19 @@ class ControlledExecutor:
         record_activity = getattr(self.store, "record_activity", None)
         if record_activity is not None:
             record_activity(task_id, activity_type, payload)
+
+    def _record_audit(
+        self,
+        task_id: str,
+        event_type: str,
+        resource: str,
+        details: Mapping[str, Any],
+        *,
+        outcome: str = "allowed",
+    ) -> None:
+        record_audit = getattr(self.store, "record_audit", None)
+        if record_audit is not None:
+            record_audit(event_type, actor="deepseek", resource=resource, outcome=outcome, details=mask_secrets(details), task_id=task_id)
 
     @staticmethod
     def _structured_vision_findings(content: str) -> str:
