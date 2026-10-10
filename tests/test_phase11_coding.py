@@ -69,3 +69,53 @@ def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monk
     assert api.catalog()["agents"][1]["model"] == "qwen2.5:3b"
     assert api.catalog()["agents"][2]["model"] == "qwen2.5-coder:7b"
     store.close()
+
+
+
+def test_workspace_command_timeout_terminates_child(tmp_path):
+    import os
+
+    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1)
+    workspace.create_project({"project": "timeout"})
+    result = workspace.run_command({
+        "project": "timeout",
+        "command": ["python" if os.name == "nt" else "python3", "-c", "import time; time.sleep(10)"],
+        "timeout_seconds": 1,
+    })
+    assert result["status"] == "timed_out"
+    assert result["returncode"] == 124
+
+
+
+def test_workspace_serves_created_web_app_over_preview(tmp_path):
+    import time
+    import urllib.error
+    import urllib.request
+
+    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace.create_project({"project": "todo"})
+    workspace.write_file({
+        "project": "todo",
+        "path": "index.html",
+        "content": "<!doctype html><title>Todo</title><h1>My tasks</h1>",
+    })
+    port = 18767
+    preview = workspace.start_preview({
+        "project": "todo",
+        "port": port,
+        "command": ["python" if __import__("os").name == "nt" else "python3", "-m", "http.server", str(port)],
+    })
+    try:
+        deadline = time.monotonic() + 5
+        response_body = None
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5) as response:
+                    response_body = response.read().decode("utf-8")
+                    break
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.1)
+        assert response_body is not None, workspace.console_output({"preview_id": preview["preview_id"]})
+        assert "<h1>My tasks</h1>" in response_body
+    finally:
+        workspace.stop_preview({"preview_id": preview["preview_id"]})

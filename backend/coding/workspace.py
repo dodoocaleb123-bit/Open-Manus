@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import shutil
 import subprocess
 import time
@@ -129,12 +128,24 @@ class CodingWorkspace:
             raise CodingWorkspaceError("project does not exist")
         timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 600)
         started = time.monotonic()
+        process_options: dict[str, Any] = {}
+        if os.name == "posix":
+            process_options["start_new_session"] = True
+            process_options["preexec_fn"] = self._resource_limits
+        elif os.name == "nt":
+            process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(
+            command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self._safe_environment(), **process_options,
+        )
         try:
-            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment(), start_new_session=True, preexec_fn=self._resource_limits)
-            status = "passed" if completed.returncode == 0 else "failed"
-            result = CommandResult(command, str(project), completed.returncode, completed.stdout[-50000:], completed.stderr[-50000:], time.monotonic() - started, status)
-        except subprocess.TimeoutExpired as exc:
-            result = CommandResult(command, str(project), 124, str(exc.stdout or "")[-50000:], str(exc.stderr or "")[-50000:], time.monotonic() - started, "timed_out")
+            stdout, stderr = process.communicate(timeout=timeout)
+            status = "passed" if process.returncode == 0 else "failed"
+            result = CommandResult(command, str(project), process.returncode, stdout[-50000:], stderr[-50000:], time.monotonic() - started, status)
+        except subprocess.TimeoutExpired:
+            self._terminate_process_tree(process)
+            stdout, stderr = process.communicate()
+            result = CommandResult(command, str(project), 124, stdout[-50000:], stderr[-50000:], time.monotonic() - started, "timed_out")
         return result.to_dict()
 
     def snapshot(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -162,7 +173,7 @@ class CodingWorkspace:
         project = self._project(arguments.get("project", ""))
         if not project.is_dir():
             raise CodingWorkspaceError("project does not exist")
-        command = tuple(str(item) for item in arguments.get("command", ("python3", "-m", "http.server", str(arguments.get("port", 8000)))))
+        command = tuple(str(item) for item in arguments.get("command", ("python" if os.name == "nt" else "python3", "-m", "http.server", str(arguments.get("port", 8000)))))
         self._validate_command(command, preview=True)
         port = int(arguments.get("port", 8000))
         if not 1024 <= port <= 65535:
@@ -175,7 +186,12 @@ class CodingWorkspace:
         preview_id = f"preview_{uuid.uuid4().hex}"
         log_path = log_dir / f"{preview_id}.log"
         log_handle = log_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=self._safe_environment())
+        process_options: dict[str, Any] = {}
+        if os.name == "posix":
+            process_options["start_new_session"] = True
+        elif os.name == "nt":
+            process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=self._safe_environment(), **process_options)
         self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time(), str(log_path), log_handle, viewport)
         return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting", "viewport": viewport, "viewports": {"desktop": {"width": 1440, "height": 900}, "mobile": {"width": 390, "height": 844}}}
 
@@ -184,11 +200,7 @@ class CodingWorkspace:
         preview = self._previews.get(preview_id)
         if preview is None:
             raise CodingWorkspaceError("preview does not exist")
-        preview.process.terminate()
-        try:
-            preview.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            preview.process.kill()
+        self._terminate_process_tree(preview.process)
         preview.log_handle.close()
         self._previews.pop(preview_id, None)
         return {"preview_id": preview_id, "status": "stopped"}
@@ -238,13 +250,60 @@ class CodingWorkspace:
             raise CodingWorkspaceError("preview command is not allowlisted")
 
     @staticmethod
+    def _terminate_process_tree(process: subprocess.Popen[Any], *, timeout_seconds: float = 5.0) -> None:
+        """Stop a command and its descendants, not just the direct child process."""
+        if os.name == "nt":
+            if process.poll() is not None:
+                return
+            # taskkill /T includes descendants; /F is used because this path is
+            # invoked for timeout/cancellation and must not leave preview workers.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=timeout_seconds, check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                import signal
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
+            process.wait(timeout=timeout_seconds)
+
+    @staticmethod
     def _safe_environment() -> dict[str, str]:
-        allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH"}
-        return {key: value for key, value in os.environ.items() if key in allowed}
+        # Preserve the minimum platform variables required to launch child
+        # processes. Windows Python subprocesses can fail without SYSTEMROOT,
+        # TEMP, and PATHEXT even when PATH is present.
+        allowed = {
+            "PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH",
+            "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC",
+            "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        }
+        return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
     @staticmethod
     def _resource_limits() -> None:
-        """Apply conservative POSIX limits inside child processes; no shell is used."""
+        """Apply conservative POSIX limits; only passed to subprocesses on POSIX."""
+        if os.name != "posix":
+            return
+        import resource
+
         cpu = max(1, int(os.getenv("OPENMANUS_COMMAND_CPU_SECONDS", "120")))
         memory = max(128, int(os.getenv("OPENMANUS_COMMAND_MEMORY_MB", "1024"))) * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
