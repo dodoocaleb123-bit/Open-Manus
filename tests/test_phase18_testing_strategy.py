@@ -117,7 +117,7 @@ def test_deepseek_approval_failure_and_recovery():
     loop, store, _ = make_loop([
         decision("I will perform the operation.", command=command("run_tool", {"tool": "risky", "arguments": {}})),
         decision("The operation recovered.", status="completed", command=command("complete_task", {})),
-    ], tools=(ToolSpec("risky", risky),))
+    ], tools=(ToolSpec("risky", risky, retry_safe=True),))
     failed = run(loop.start("Do the risky operation"))
     assert failed.status is TaskStatus.FAILED
     recovered = run(loop.retry(failed.task_id))
