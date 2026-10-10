@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import resource
 import shutil
 import subprocess
 import time
@@ -130,7 +129,15 @@ class CodingWorkspace:
         timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 600)
         started = time.monotonic()
         try:
-            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment(), start_new_session=True, preexec_fn=self._resource_limits)
+            process_options: dict[str, Any] = {}
+            if os.name == "posix":
+                # POSIX-only process group and resource limits. Windows does not
+                # provide resource/preexec_fn; timeout and command allowlists still apply.
+                process_options["start_new_session"] = True
+                process_options["preexec_fn"] = self._resource_limits
+            elif os.name == "nt":
+                process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment(), **process_options)
             status = "passed" if completed.returncode == 0 else "failed"
             result = CommandResult(command, str(project), completed.returncode, completed.stdout[-50000:], completed.stderr[-50000:], time.monotonic() - started, status)
         except subprocess.TimeoutExpired as exc:
@@ -175,7 +182,12 @@ class CodingWorkspace:
         preview_id = f"preview_{uuid.uuid4().hex}"
         log_path = log_dir / f"{preview_id}.log"
         log_handle = log_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=self._safe_environment())
+        process_options: dict[str, Any] = {}
+        if os.name == "posix":
+            process_options["start_new_session"] = True
+        elif os.name == "nt":
+            process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=self._safe_environment(), **process_options)
         self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time(), str(log_path), log_handle, viewport)
         return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting", "viewport": viewport, "viewports": {"desktop": {"width": 1440, "height": 900}, "mobile": {"width": 390, "height": 844}}}
 
@@ -244,7 +256,11 @@ class CodingWorkspace:
 
     @staticmethod
     def _resource_limits() -> None:
-        """Apply conservative POSIX limits inside child processes; no shell is used."""
+        """Apply conservative POSIX limits; only passed to subprocesses on POSIX."""
+        if os.name != "posix":
+            return
+        import resource
+
         cpu = max(1, int(os.getenv("OPENMANUS_COMMAND_CPU_SECONDS", "120")))
         memory = max(128, int(os.getenv("OPENMANUS_COMMAND_MEMORY_MB", "1024"))) * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
