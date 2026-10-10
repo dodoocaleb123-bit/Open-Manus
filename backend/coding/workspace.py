@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import zipfile
@@ -169,7 +170,7 @@ class CodingWorkspace:
         project = self._project(arguments.get("project", ""))
         if not project.is_dir():
             raise CodingWorkspaceError("project does not exist")
-        command = tuple(str(item) for item in arguments.get("command", ("python3", "-m", "http.server", str(arguments.get("port", 8000)))))
+        command = tuple(str(item) for item in arguments.get("command", ("python" if os.name == "nt" else "python3", "-m", "http.server", str(arguments.get("port", 8000)))))
         self._validate_command(command, preview=True)
         port = int(arguments.get("port", 8000))
         if not 1024 <= port <= 65535:
@@ -251,8 +252,15 @@ class CodingWorkspace:
 
     @staticmethod
     def _safe_environment() -> dict[str, str]:
-        allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH"}
-        return {key: value for key, value in os.environ.items() if key in allowed}
+        # Preserve the minimum platform variables required to launch child
+        # processes. Windows Python subprocesses can fail without SYSTEMROOT,
+        # TEMP, and PATHEXT even when PATH is present.
+        allowed = {
+            "PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH",
+            "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC",
+            "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+        }
+        return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
     @staticmethod
     def _resource_limits() -> None:
