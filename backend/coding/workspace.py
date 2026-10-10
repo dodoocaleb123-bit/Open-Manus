@@ -252,9 +252,9 @@ class CodingWorkspace:
     @staticmethod
     def _terminate_process_tree(process: subprocess.Popen[Any], *, timeout_seconds: float = 5.0) -> None:
         """Stop a command and its descendants, not just the direct child process."""
-        if process.poll() is not None:
-            return
         if os.name == "nt":
+            if process.poll() is not None:
+                return
             # taskkill /T includes descendants; /F is used because this path is
             # invoked for timeout/cancellation and must not leave preview workers.
             try:
