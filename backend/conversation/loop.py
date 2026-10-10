@@ -1,6 +1,7 @@
 """DeepSeek conversation loop for local interactive execution."""
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from dataclasses import dataclass, field, replace
@@ -57,13 +58,17 @@ class DeepSeekConversationLoop:
         executor: ControlledExecutor,
         *,
         max_turns: int = 20,
+        model_timeout_seconds: float = 90.0,
         event_sink: EventSink | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be positive")
+        if model_timeout_seconds <= 0:
+            raise ValueError("model_timeout_seconds must be positive")
         self.controller = controller
         self.executor = executor
         self.max_turns = max_turns
+        self.model_timeout_seconds = model_timeout_seconds
         self.event_sink = event_sink
         self._messages: dict[str, list[Mapping[str, Any]]] = {}
         self._events: dict[str, list[ConversationEvent]] = {}
@@ -200,7 +205,21 @@ class DeepSeekConversationLoop:
             if task.status is not TaskStatus.RUNNING:
                 return self._result(task_id)
             self._turns[task_id] += 1
-            decision = await self.controller.decide(self._messages[task_id], context=context, tools=tools)
+            try:
+                decision = await asyncio.wait_for(
+                    self.controller.decide(self._messages[task_id], context=context, tools=tools),
+                    timeout=self.model_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                error = f"Controller model timed out after {self.model_timeout_seconds:g} seconds"
+                self.executor.store.update_task(task_id, status=TaskStatus.FAILED, last_error=error)
+                await self._emit(task_id, ConversationEvent("error", task_id, error, TaskStatus.FAILED))
+                return self._result(task_id, error=error)
+            except Exception as exc:
+                error = f"Controller request failed: {type(exc).__name__}: {exc}"
+                self.executor.store.update_task(task_id, status=TaskStatus.FAILED, last_error=error)
+                await self._emit(task_id, ConversationEvent("error", task_id, error, TaskStatus.FAILED))
+                return self._result(task_id, error=error)
             await self._record_decision(task_id, decision)
             self._append_message(
                 task_id,
