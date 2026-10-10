@@ -74,13 +74,12 @@ def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monk
 
 def test_workspace_command_timeout_terminates_child(tmp_path):
     import os
-    import sys
 
     workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1)
     workspace.create_project({"project": "timeout"})
     result = workspace.run_command({
         "project": "timeout",
-        "command": [sys.executable, "-c", "import time; time.sleep(10)"],
+        "command": ["python" if os.name == "nt" else "python3", "-c", "import time; time.sleep(10)"],
         "timeout_seconds": 1,
     })
     assert result["status"] == "timed_out"
