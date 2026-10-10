@@ -147,8 +147,9 @@ def test_rejecting_approval_cancels_task_and_records_rejection_without_error():
     waiting = run(executor.execute(
         task.task_id,
         ControllerCommand(CommandType.REQUEST_USER_APPROVAL, {
-            "action": "delete_project",
-            "summary": "Delete generated project",
+            "action": "delete_user_data",
+            "summary": "Delete generated project data",
+            "impact": "The project data would be permanently removed.",
         }),
     ))
     assert waiting.task_status is TaskStatus.WAITING_FOR_APPROVAL
@@ -163,3 +164,17 @@ def test_rejecting_approval_cancels_task_and_records_rejection_without_error():
     audits = store.list_audit_events(task.task_id) if hasattr(store, "list_audit_events") else []
     if audits:
         assert any(event.get("outcome") == "rejected" for event in audits if isinstance(event, dict))
+
+    # Rejection is terminal: a later attempt to dispatch work must be refused.
+    calls = []
+    executor.register_tool(ToolSpec(
+        "delete_data",
+        lambda args: calls.append(args) or "deleted",
+        approval_action="delete_user_data",
+        description="Delete data",
+    ))
+    with pytest.raises(ExecutionStateError, match="terminal task"):
+        run(executor.execute(task.task_id, ControllerCommand(
+            CommandType.RUN_TOOL, {"tool": "delete_data", "arguments": {}}
+        )))
+    assert calls == []
