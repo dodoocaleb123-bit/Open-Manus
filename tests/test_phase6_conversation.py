@@ -190,14 +190,19 @@ def test_loop_reports_malformed_controller_output_as_failed():
 
 def test_loop_refuses_automatic_retry_of_non_idempotent_tool():
     calls = []
-    loop, _ = make_loop(
+    def external_action(args):
+        calls.append(args)
+        raise RuntimeError("simulated uncertain external failure")
+
+    loop, _store, _adapter = make_loop(
         [decision("Run the external action.", command=command(
             "run_tool", {"tool": "external", "arguments": {}}
         ))],
-        tools=(ToolSpec("external", lambda args: calls.append(args) or "done"),),
+        tools=(ToolSpec("external", external_action),),
     )
     failed = run(loop.start("Run external action"))
     assert failed.status is TaskStatus.FAILED
+    assert "simulated uncertain external failure" in (failed.error or "")
     with pytest.raises(ConversationLoopError, match="Automatic retry refused"):
         run(loop.retry(failed.task_id))
     assert calls == []
