@@ -185,3 +185,19 @@ def test_loop_reports_malformed_controller_output_as_failed():
     result = run(loop.start("Test malformed response"))
     assert result.status is TaskStatus.FAILED
     assert "Controller request failed" in (result.error or "")
+
+
+
+def test_loop_refuses_automatic_retry_of_non_idempotent_tool():
+    calls = []
+    loop, _ = make_loop(
+        [decision("Run the external action.", command=command(
+            "run_tool", {"tool": "external", "arguments": {}}
+        ))],
+        tools=(ToolSpec("external", lambda args: calls.append(args) or "done"),),
+    )
+    failed = run(loop.start("Run external action"))
+    assert failed.status is TaskStatus.FAILED
+    with pytest.raises(ConversationLoopError, match="Automatic retry refused"):
+        run(loop.retry(failed.task_id))
+    assert calls == []
