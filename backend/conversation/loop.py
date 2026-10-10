@@ -154,6 +154,14 @@ class DeepSeekConversationLoop:
         if not failed_runs:
             raise ConversationLoopError("Task has no failed command to retry")
         original = failed_runs[-1].command
+        if original.type is CommandType.RUN_TOOL:
+            tool_name = str(original.arguments.get("tool", ""))
+            tool_spec = self.executor._tools.get(tool_name)
+            if tool_spec is None or not tool_spec.retry_safe:
+                raise ConversationLoopError(
+                    f"Automatic retry refused for tool {tool_name!r}: the tool may have partially completed. "
+                    "Only explicitly retry-safe tools can be replayed automatically."
+                )
         resumed = await self.executor.execute(task_id, ControllerCommand(CommandType.RETRY_TASK))
         await self._record_execution(task_id, resumed)
         replay = await self.executor.execute(task_id, original)
