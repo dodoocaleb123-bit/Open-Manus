@@ -109,16 +109,19 @@ class ControlledExecutor:
 
     async def reject(self, task_id: str, reason: str = "User rejected the approval request") -> ExecutionResult:
         task = self.store.get_task(task_id)
-        if task.status is not TaskStatus.WAITING_FOR_APPROVAL:
+        if task.status is not TaskStatus.WAITING_FOR_APPROVAL or not task.pending_approval:
             raise ExecutionStateError("Task is not waiting for approval")
+        # Capture the pending request before clearing it from the task record.
+        pending = dict(task.pending_approval)
+        action = str(pending.get("action", ""))
         self.store.update_task(task_id, status=TaskStatus.CANCELLED, pending_approval=None, last_error=reason)
         if task.current_run_id:
             self.store.finish_run(task.current_run_id, RunStatus.CANCELLED, error=reason)
-        self._record_activity(task_id, "approval", {"approved": False, "reason": reason})
-        self._record_audit(task_id, "approval", str(pending.get("action", "")), {"approved": False, "reason": reason}, outcome="rejected")
+        self._record_activity(task_id, "approval", {"action": action, "approved": False, "reason": reason})
+        self._record_audit(task_id, "approval", action, {"approved": False, "reason": reason}, outcome="rejected")
         record_approval = getattr(self.store, "record_approval", None)
         if record_approval is not None:
-            record_approval(task_id, str(pending.get("action", "")), False, "user", reason)
+            record_approval(task_id, action, False, "user", reason)
         return ExecutionResult(task_id, task.current_run_id, True, TaskStatus.CANCELLED, output={"rejected": True})
 
     async def submit_user_input(self, task_id: str, value: str) -> ExecutionResult:
