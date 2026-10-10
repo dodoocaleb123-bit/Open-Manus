@@ -138,3 +138,28 @@ def test_state_store_tracks_command_history_and_runs():
     assert store.snapshot(task.task_id).command_history == ["complete_task"]
     assert store.get_run(run_record.run_id).task_id == task.task_id
     assert len(store.list_runs(task.task_id)) == 1
+
+
+def test_rejecting_approval_cancels_task_and_records_rejection_without_error():
+    store = InMemoryStateStore()
+    executor = ControlledExecutor(FakeRegistry(), store=store)
+    task = executor.create_task("Delete a generated project")
+    waiting = run(executor.execute(
+        task.task_id,
+        ControllerCommand(CommandType.REQUEST_USER_APPROVAL, {
+            "action": "delete_project",
+            "summary": "Delete generated project",
+        }),
+    ))
+    assert waiting.task_status is TaskStatus.WAITING_FOR_APPROVAL
+
+    rejected = run(executor.reject(task.task_id, "Keep the project"))
+
+    assert rejected.accepted is True
+    assert rejected.task_status is TaskStatus.CANCELLED
+    snapshot = store.snapshot(task.task_id)
+    assert snapshot.pending_approval is None
+    assert snapshot.last_error == "Keep the project"
+    audits = store.list_audit_events(task.task_id) if hasattr(store, "list_audit_events") else []
+    if audits:
+        assert any(event.get("outcome") == "rejected" for event in audits if isinstance(event, dict))
