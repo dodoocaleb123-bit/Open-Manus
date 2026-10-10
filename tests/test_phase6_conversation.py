@@ -194,7 +194,7 @@ def test_loop_refuses_automatic_retry_of_non_idempotent_tool():
         calls.append(args)
         raise RuntimeError("simulated uncertain external failure")
 
-    loop, _store, _adapter = make_loop(
+    loop, _adapter = make_loop(
         [decision("Run the external action.", command=command(
             "run_tool", {"tool": "external", "arguments": {}}
         ))],
@@ -205,4 +205,4 @@ def test_loop_refuses_automatic_retry_of_non_idempotent_tool():
     assert "simulated uncertain external failure" in (failed.error or "")
     with pytest.raises(ConversationLoopError, match="Automatic retry refused"):
         run(loop.retry(failed.task_id))
-    assert calls == []
+    assert calls == [{}]
