@@ -34,6 +34,7 @@ class ToolSpec:
     approval_action: str | None = None
     description: str = ""
     permission: str = "tool.execute"
+    retry_safe: bool = False
 
 
 class ControlledExecutor:
