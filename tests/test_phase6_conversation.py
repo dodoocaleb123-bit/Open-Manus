@@ -154,3 +154,34 @@ def test_resuming_unknown_or_non_loop_task_is_rejected():
     loop, _ = make_loop([])
     with pytest.raises(ConversationLoopError, match="context is not available"):
         run(loop.provide_user_input("task_missing", "answer"))
+
+
+
+def test_loop_marks_controller_timeout_as_failed_without_hanging():
+    class HangingAdapter(SequenceAdapter):
+        async def generate(self, request):
+            await asyncio.sleep(1)
+            return await super().generate(request)
+
+    adapter = HangingAdapter([decision("This should not be reached.", status="completed", command=command("complete_task", {}))])
+    loop = DeepSeekConversationLoop(
+        DeepSeekController(adapter),
+        ControlledExecutor(Registry()),
+        model_timeout_seconds=0.01,
+    )
+    result = run(loop.start("Test timeout"))
+    assert result.status is TaskStatus.FAILED
+    assert "timed out" in (result.error or "")
+    assert any(event.kind == "error" for event in result.events)
+
+
+def test_loop_reports_malformed_controller_output_as_failed():
+    adapter = SequenceAdapter(["not valid JSON"])
+    loop = DeepSeekConversationLoop(
+        DeepSeekController(adapter),
+        ControlledExecutor(Registry()),
+        model_timeout_seconds=1,
+    )
+    result = run(loop.start("Test malformed response"))
+    assert result.status is TaskStatus.FAILED
+    assert "Controller request failed" in (result.error or "")
