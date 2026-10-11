@@ -253,10 +253,10 @@ class CodingWorkspace:
     def _terminate_process_tree(process: subprocess.Popen[Any], *, timeout_seconds: float = 5.0) -> None:
         """Stop a command and its descendants, not just the direct child process."""
         if os.name == "nt":
-            if process.poll() is not None:
-                return
-            # taskkill /T includes descendants; /F is used because this path is
-            # invoked for timeout/cancellation and must not leave preview workers.
+            # Do not skip taskkill just because the direct child has exited:
+            # it may have spawned a worker that outlives it. Windows' taskkill
+            # /T is best-effort in that case, but attempting it is safer than
+            # returning early and guaranteeing we never try to clean up.
             try:
                 subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
