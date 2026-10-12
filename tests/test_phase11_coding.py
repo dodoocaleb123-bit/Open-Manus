@@ -82,6 +82,34 @@ def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monk
 
 
 
+def test_workspace_timeout_kills_surviving_descendant(tmp_path):
+    import os
+    import sys
+
+    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1, allow_unsafe_execution=True)
+    workspace.create_project({"project": "tree"})
+    marker = tmp_path / "descendant-survived.txt"
+    child_code = (
+        "import time; time.sleep(2); "
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write('survived')"
+    )
+    parent_code = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "time.sleep(10)"
+    )
+    result = workspace.run_command({
+        "project": "tree",
+        "command": [sys.executable, "-c", parent_code],
+        "timeout_seconds": 1,
+    })
+    assert result["status"] == "timed_out"
+    # If cleanup only killed the direct child, the descendant would write this
+    # marker after the parent timed out. Allow enough time to expose that leak.
+    time.sleep(2.5)
+    assert not marker.exists(), "descendant process survived command timeout"
+
+
 def test_workspace_command_timeout_terminates_child(tmp_path):
     import os
 
