@@ -20,8 +20,18 @@ class Registry:
         return tuple(self.adapters)
 
 
-def test_workspace_files_commands_snapshots_and_export(tmp_path):
+def test_workspace_execution_fails_closed_without_sandbox_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENMANUS_ALLOW_UNSANDBOXED_CODE", raising=False)
     workspace = CodingWorkspace(tmp_path / "projects")
+    workspace.create_project({"project": "demo"})
+    with pytest.raises(CodingWorkspaceError, match="no OS-enforced sandbox"):
+        workspace.run_command({"project": "demo", "command": ["python", "-c", "print('should not run')"]})
+    with pytest.raises(CodingWorkspaceError, match="no OS-enforced sandbox"):
+        workspace.start_preview({"project": "demo", "port": 18768})
+
+
+def test_workspace_files_commands_snapshots_and_export(tmp_path):
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     created = workspace.create_project({"project": "demo"})
     assert created["created"] is True
     workspace.write_file({"project": "demo", "path": "tests/test_ok.py", "content": "def test_ok():\n    assert 2 + 2 == 4\n"})
@@ -37,7 +47,7 @@ def test_workspace_files_commands_snapshots_and_export(tmp_path):
 
 
 def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "demo"})
     with pytest.raises(CodingWorkspaceError, match="escapes"):
         workspace.write_file({"project": "demo", "path": "../secret.txt", "content": "no"})
@@ -48,7 +58,7 @@ def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
 
 
 def test_preview_server_lifecycle(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "demo"})
     preview = workspace.start_preview({"project": "demo", "port": 18765})
     try:
@@ -75,7 +85,7 @@ def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monk
 def test_workspace_command_timeout_terminates_child(tmp_path):
     import os
 
-    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1)
+    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1, allow_unsafe_execution=True)
     workspace.create_project({"project": "timeout"})
     result = workspace.run_command({
         "project": "timeout",
@@ -92,7 +102,7 @@ def test_workspace_serves_created_web_app_over_preview(tmp_path):
     import urllib.error
     import urllib.request
 
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "todo"})
     workspace.write_file({
         "project": "todo",
