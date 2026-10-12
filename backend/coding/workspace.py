@@ -53,11 +53,31 @@ class CodingWorkspace:
     SAFE_NPM_SUBCOMMANDS = {"test", "run", "install", "ci", "build", "lint", "check"}
     SAFE_PIP_SUBCOMMANDS = {"install", "list", "show", "freeze"}
 
-    def __init__(self, root: str | Path = "./workspace/projects", *, timeout_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        root: str | Path = "./workspace/projects",
+        *,
+        timeout_seconds: int = 120,
+        allow_unsafe_execution: bool | None = None,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.timeout_seconds = timeout_seconds
+        # This workspace currently has no OS-enforced sandbox. Fail closed by
+        # default; the environment override is an explicit, temporary opt-in
+        # for trusted local development only, not a security boundary.
+        if allow_unsafe_execution is None:
+            allow_unsafe_execution = os.getenv("OPENMANUS_ALLOW_UNSANDBOXED_CODE", "").lower() == "true"
+        self.allow_unsafe_execution = allow_unsafe_execution
         self._previews: dict[str, PreviewProcess] = {}
+
+    def _require_execution_opt_in(self) -> None:
+        if not self.allow_unsafe_execution:
+            raise CodingWorkspaceError(
+                "Code execution is disabled because no OS-enforced sandbox is configured. "
+                "Use an isolated runner, or explicitly set OPENMANUS_ALLOW_UNSANDBOXED_CODE=true "
+                "only for trusted local projects."
+            )
 
     def create_project(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", arguments.get("name", "")))
@@ -119,6 +139,7 @@ class CodingWorkspace:
         return self.run_command({**arguments, "command": command, "operation": "build"})
 
     def run_command(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_execution_opt_in()
         command = tuple(str(item) for item in arguments.get("command", ()))
         if not command or command[0] not in self.ALLOWED_COMMANDS:
             raise CodingWorkspaceError(f"command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}")
@@ -170,6 +191,7 @@ class CodingWorkspace:
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_execution_opt_in()
         project = self._project(arguments.get("project", ""))
         if not project.is_dir():
             raise CodingWorkspaceError("project does not exist")
