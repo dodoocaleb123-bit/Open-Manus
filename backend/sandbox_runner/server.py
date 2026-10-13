@@ -226,19 +226,22 @@ def execute_job(value: Any) -> dict[str, Any]:
             "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m,mode=1777",
             "--env", "HOME=/tmp",
             "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
-            IMAGE, *command,
+            IMAGE,
         ]
         subprocess.run(docker_create, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, text=True, timeout=30, check=True,
-                       env=_docker_env())
+                       stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
         container_created = True
+        subprocess.run(["docker", "start", job_id], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                       timeout=30, check=True, env=_docker_env())
         subprocess.run(["docker", "cp", str(staged) + os.sep + ".", job_id + ":/workspace/"],
                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       text=True, timeout=30, check=True)
+                       text=True, timeout=30, check=True, env=_docker_env())
         attached = subprocess.Popen(
-            ["docker", "start", "--attach", job_id], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            ["docker", "exec", "--user", "65534:65534", "--workdir", "/workspace",
+             job_id, *command],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=_docker_env(),
         )
         assert attached.stdout is not None and attached.stderr is not None
         out_thread = threading.Thread(target=_bounded_stream, args=(attached.stdout, stdout_data), daemon=True)
@@ -251,7 +254,7 @@ def execute_job(value: Any) -> dict[str, Any]:
         except subprocess.TimeoutExpired:
             subprocess.run(["docker", "kill", "--signal", "KILL", job_id],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=10, check=False)
+                           stderr=subprocess.DEVNULL, timeout=10, check=False, env=_docker_env())
             try:
                 attached.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -261,12 +264,13 @@ def execute_job(value: Any) -> dict[str, Any]:
             result_status = "timed_out"
         out_thread.join(timeout=3)
         err_thread.join(timeout=3)
-        # The container has stopped before output is copied back. It cannot
-        # continue modifying the staged files during synchronization.
-        subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, text=True, timeout=30, check=False)
-        _safe_sync_back(staged, project, baseline)
+        if result_status != "timed_out":
+            # Copy output only after the generated process has exited. The
+            # container's main process is an inert sleep, not generated code.
+            subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True, timeout=30, check=False, env=_docker_env())
+            _safe_sync_back(staged, project, baseline)
     finally:
         if container_created:
             subprocess.run(["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
