@@ -70,6 +70,20 @@ def test_generated_job_runs_unprivileged_and_syncs_only_project_output(sandbox_r
     assert "UID=65534" in result["stdout"]
     assert (sandbox_root / "writes" / "generated.txt").read_text(encoding="utf-8") == "created safely"
 
+
+
+def test_project_environment_secrets_are_not_copied_into_job(sandbox_root):
+    project = sandbox_root / "secrets"
+    project.mkdir()
+    (project / ".env").write_text("API_KEY=secret", encoding="utf-8")
+    result = server.execute_job({
+        "project": "secrets",
+        "command": ["python", "-c", "from pathlib import Path; print(Path('/workspace/.env').exists())"],
+        "timeout_seconds": 10,
+    })
+    assert result["status"] == "passed", result["stderr"]
+    assert result["stdout"].strip() == "False"
+
 def test_container_has_no_network(sandbox_root):
     result = run_project(
         sandbox_root, "network",
