@@ -122,3 +122,35 @@ def test_runner_http_api_requires_bearer_token(tmp_path, monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=2)
+
+
+
+def test_runner_client_waits_longer_than_job_deadline(monkeypatch):
+    import json
+
+    import coding.runner_client as client_module
+    from coding.runner_client import SandboxRunnerClient
+
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return json.dumps({
+                "job_id": "test", "returncode": 0, "stdout": "", "stderr": "",
+                "duration_seconds": 1, "status": "passed",
+            }).encode("utf-8")
+
+    def fake_urlopen(_request, timeout):
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+    runner = SandboxRunnerClient("http://127.0.0.1:8765", "token", request_timeout=10)
+    runner.run({"project": "demo", "command": ["python", "-c", "pass"], "timeout_seconds": 90})
+    assert seen["timeout"] == 135
