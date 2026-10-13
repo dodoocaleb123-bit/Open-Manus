@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,8 @@ IMAGE = os.environ.get("OPENMANUS_SANDBOX_IMAGE", "openmanus-code-runner:latest"
 MAX_BODY = 64 * 1024
 MAX_OUTPUT = 50_000
 MAX_TIMEOUT = 120
+MAX_CONCURRENT_JOBS = 4
+JOB_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 EXECUTABLES = {"python": "python", "python3": "python", "pytest": "pytest", "node": "node", "npm": "npm", "npx": "npx"}
 NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check"}
@@ -78,32 +81,48 @@ def execute_job(value: Any) -> dict[str, Any]:
         "--env", "PATH=/usr/local/bin:/usr/bin:/bin", IMAGE, *command,
     ]
     started = time.monotonic()
-    try:
-        completed = subprocess.run(
-            docker_command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, errors="replace", timeout=timeout,
-            check=False, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-        )
-        return {
-            "job_id": job_id, "returncode": completed.returncode,
-            "stdout": completed.stdout[-MAX_OUTPUT:], "stderr": completed.stderr[-MAX_OUTPUT:],
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "status": "passed" if completed.returncode == 0 else "failed",
-        }
-    except subprocess.TimeoutExpired as exc:
-        subprocess.run(["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
-        stdout, stderr = exc.stdout or "", exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", "replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", "replace")
-        return {
-            "job_id": job_id, "returncode": 124, "stdout": stdout[-MAX_OUTPUT:],
-            "stderr": stderr[-MAX_OUTPUT:], "duration_seconds": round(time.monotonic() - started, 3),
-            "status": "timed_out",
-        }
+    captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
 
+    def drain(stream: Any, key: str) -> None:
+        # Always drain the pipe to avoid blocking the child, but retain at most
+        # MAX_OUTPUT bytes per stream so a hostile command cannot exhaust RAM.
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                return
+            remaining = MAX_OUTPUT - len(captured[key])
+            if remaining > 0:
+                captured[key].extend(chunk[:remaining])
+
+    process = subprocess.Popen(
+        docker_command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+    )
+    assert process.stdout is not None and process.stderr is not None
+    out_thread = threading.Thread(target=drain, args=(process.stdout, "stdout"), daemon=True)
+    err_thread = threading.Thread(target=drain, args=(process.stderr, "stderr"), daemon=True)
+    out_thread.start()
+    err_thread.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+        subprocess.run(
+            ["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
+        )
+        returncode = 124
+    out_thread.join(timeout=2)
+    err_thread.join(timeout=2)
+    stdout = captured["stdout"].decode("utf-8", "replace")
+    stderr = captured["stderr"].decode("utf-8", "replace")
+    return {
+        "job_id": job_id, "returncode": returncode,
+        "stdout": stdout, "stderr": stderr,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "status": "timed_out" if returncode == 124 else ("passed" if returncode == 0 else "failed"),
+    }
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "OpenManusSandbox/1.0"
@@ -144,6 +163,9 @@ class Handler(BaseHTTPRequestHandler):
         if not length.isdigit() or not 1 <= int(length) <= MAX_BODY:
             self._send(413, {"error": "invalid request size"})
             return
+        if not JOB_SLOTS.acquire(blocking=False):
+            self._send(429, {"error": "runner concurrency limit reached"})
+            return
         try:
             payload = json.loads(self.rfile.read(int(length)).decode("utf-8"))
             self._send(200, execute_job(payload))
@@ -151,6 +173,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": str(exc)})
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             self._send(503, {"error": "sandbox execution unavailable", "detail": str(exc)[:500]})
+        finally:
+            JOB_SLOTS.release()
 
 
 def main() -> None:
