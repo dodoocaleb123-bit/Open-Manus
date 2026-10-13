@@ -34,6 +34,9 @@ MAX_PROJECT_BYTES = 100 * 1024 * 1024
 MAX_WORKSPACE_BYTES = 256 * 1024 * 1024
 MAX_CONCURRENT_JOBS = 4
 JOB_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+MAX_ACTIVE_PREVIEWS = 4
+PREVIEWS: dict[str, dict[str, Any]] = {}
+PREVIEW_LOCK = threading.Lock()
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 EXECUTABLES = {"python", "python3", "pytest", "node", "npm", "npx"}
 NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check", "install"}
@@ -380,6 +383,303 @@ def execute_job(value: Any) -> dict[str, Any]:
         "duration_seconds": round(time.monotonic() - started, 3),
         "status": result_status,
     }
+
+
+
+PREVIEW_RUNNER = r"""import json, os, signal, subprocess
+command = json.load(open('/tmp/openmanus-preview-command.json', encoding='utf-8'))
+log = open('/tmp/openmanus-preview.log', 'ab', buffering=0)
+process = subprocess.Popen(
+    command, cwd='/workspace', stdout=log, stderr=subprocess.STDOUT,
+    env={'HOME': '/tmp', 'PATH': '/usr/local/bin:/usr/bin:/bin', 'PYTHONDONTWRITEBYTECODE': '1'},
+    start_new_session=True,
+)
+open('/tmp/openmanus-preview.pid', 'w', encoding='ascii').write(str(process.pid))
+code = process.wait()
+open('/tmp/openmanus-preview.exit', 'w', encoding='ascii').write(str(code))
+try:
+    os.killpg(process.pid, signal.SIGKILL)
+except ProcessLookupError:
+    pass
+"""
+
+PREVIEW_PROXY = r"""import select, socket, socketserver, sys, threading
+target, target_port = sys.argv[1], int(sys.argv[2])
+slots = threading.BoundedSemaphore(32)
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        if not slots.acquire(False):
+            return
+        upstream = None
+        try:
+            upstream = socket.create_connection((target, target_port), timeout=5)
+            self.request.settimeout(60)
+            upstream.settimeout(60)
+            peers = [self.request, upstream]
+            while True:
+                readable, _, _ = select.select(peers, [], [], 60)
+                if not readable:
+                    return
+                for source in readable:
+                    data = source.recv(65536)
+                    if not data:
+                        return
+                    (upstream if source is self.request else self.request).sendall(data)
+        except OSError:
+            pass
+        finally:
+            if upstream is not None:
+                upstream.close()
+            slots.release()
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+    request_queue_size = 32
+
+Server(('0.0.0.0', 8080), Handler).serve_forever()
+"""
+
+
+def _preview_process_state(container_name: str) -> dict[str, Any]:
+    code = (
+        "import json,os,sys\\n"
+        "base='/tmp/openmanus-preview-'\\n"
+        "exit_path=base+'exit'\\n"
+        "pid_path=base+'pid'\\n"
+        "if os.path.exists(exit_path):\\n"
+        " print(json.dumps({'status':'stopped','returncode':int(open(exit_path).read())}))\\n"
+        "elif not os.path.exists(pid_path):\\n"
+        " print(json.dumps({'status':'starting'}))\\n"
+        "else:\\n"
+        " p=int(open(pid_path).read())\\n"
+        " try:\\n"
+        "  state=open('/proc/'+str(p)+'/stat').read().split()[2]\\n"
+        "  print(json.dumps({'status':'stopped' if state=='Z' else 'running'}))\\n"
+        " except OSError:\\n"
+        "  print(json.dumps({'status':'stopped'}))"
+    )
+    result = subprocess.run(
+        ["docker", "exec", container_name, "python", "-c", code],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=5, check=False, env=_docker_env(),
+    )
+    if result.returncode:
+        return {"status": "stopped"}
+    try:
+        parsed = json.loads(result.stdout.strip())
+        return parsed if isinstance(parsed, dict) else {"status": "stopped"}
+    except json.JSONDecodeError:
+        return {"status": "stopped"}
+
+
+def _preview_logs(container_name: str) -> str:
+    code = (
+        "from pathlib import Path; p=Path('/tmp/openmanus-preview.log'); "
+        "print(p.read_text(errors='replace')[-50000:] if p.exists() else '')"
+    )
+    result = subprocess.run(
+        ["docker", "exec", container_name, "python", "-c", code],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=5, check=False, env=_docker_env(),
+    )
+    return result.stdout[-MAX_OUTPUT:] if result.returncode == 0 else result.stderr[-MAX_OUTPUT:]
+
+
+def start_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) - {"project", "command", "port"}:
+        raise RequestError("preview must contain only project, command, and port")
+    port = value.get("port", 8000)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise RequestError("preview port must be an integer between 1024 and 65535")
+    project_name, command, _ = validate_job({
+        "project": value.get("project"),
+        "command": value.get("command"),
+        "timeout_seconds": 120,
+    })
+    if not TOKEN or not PROJECTS_ROOT.is_dir():
+        raise RuntimeError("sandbox runner is not configured")
+    project = PROJECTS_ROOT / project_name
+    if project.is_symlink() or not project.is_dir() or project.resolve().parent != PROJECTS_ROOT:
+        raise RequestError("project does not exist or is not a direct workspace child")
+
+    with PREVIEW_LOCK:
+        if len(PREVIEWS) >= MAX_ACTIVE_PREVIEWS:
+            raise RequestError("active preview limit reached")
+    preview_id = uuid.uuid4().hex[:24]
+    sandbox_id = "om-prev-" + preview_id
+    proxy_id = "om-proxy-" + preview_id
+    network_id = "om-net-" + preview_id
+    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(PROJECTS_ROOT.parent)))
+    stage_root.chmod(0o755)
+    staged = stage_root / "workspace"
+    network_created = False
+    sandbox_created = False
+    proxy_created = False
+    try:
+        _copy_workspace(project, staged)
+        subprocess.run(
+            ["docker", "network", "create", "--internal", "--label", "openmanus.sandbox=true", network_id],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=20, check=True, env=_docker_env(),
+        )
+        network_created = True
+        create_sandbox = [
+            "docker", "create", "--name", sandbox_id, "--label", "openmanus.sandbox=true",
+            "--network", network_id, "--read-only", "--cap-drop", "ALL", "--cap-add", "KILL",
+            "--security-opt", "no-new-privileges:true", "--pids-limit", "128",
+            "--memory", "512m", "--memory-swap", "512m", "--cpus", "1.0",
+            "--ulimit", "nofile=256:256",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m,mode=1777",
+            "--env", "HOME=/tmp", "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
+            "--entrypoint", "/bin/sleep", IMAGE, "100000000",
+        ]
+        subprocess.run(create_sandbox, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
+        sandbox_created = True
+        subprocess.run(["docker", "start", sandbox_id], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                       timeout=30, check=True, env=_docker_env())
+        seeded = subprocess.run(
+            ["docker", "exec", "-i", sandbox_id, "tar", "-x", "--no-same-owner", "-f", "-", "-C", "/workspace"],
+            input=_archive_staged(staged), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False, env=_docker_env(),
+        )
+        if seeded.returncode:
+            raise RuntimeError("failed to seed preview workspace: " + seeded.stderr.decode("utf-8", "replace")[-1000:])
+
+        assets = stage_root / "assets"
+        assets.mkdir()
+        (assets / "openmanus-preview-runner.py").write_text(PREVIEW_RUNNER, encoding="utf-8")
+        (assets / "openmanus-preview-command.json").write_text(json.dumps(command), encoding="utf-8")
+        seeded_assets = subprocess.run(
+            ["docker", "exec", "-i", sandbox_id, "tar", "-x", "--no-same-owner", "-f", "-", "-C", "/tmp"],
+            input=_archive_staged(assets), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=15, check=False, env=_docker_env(),
+        )
+        if seeded_assets.returncode:
+            raise RuntimeError("failed to seed preview controller: " + seeded_assets.stderr.decode("utf-8", "replace")[-1000:])
+        subprocess.run(
+            ["docker", "exec", "--detach", "--user", "65534:65534", "--workdir", "/workspace",
+             sandbox_id, "python", "/tmp/openmanus-preview-runner.py"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=10, check=True, env=_docker_env(),
+        )
+
+        deadline = time.monotonic() + 5
+        state: dict[str, Any] = {"status": "starting"}
+        while time.monotonic() < deadline:
+            state = _preview_process_state(sandbox_id)
+            if state.get("status") == "running":
+                break
+            if state.get("status") == "stopped":
+                raise RequestError("preview process exited during startup: " + _preview_logs(sandbox_id))
+            time.sleep(0.1)
+        if state.get("status") != "running":
+            raise RequestError("preview process did not become ready: " + _preview_logs(sandbox_id))
+
+        subprocess.run(
+            ["docker", "create", "--name", proxy_id, "--label", "openmanus.sandbox=true",
+             "--network", network_id, "--publish", "127.0.0.1::8080/tcp",
+             "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+             "--pids-limit", "32", "--memory", "128m", "--memory-swap", "128m",
+             "--cpus", "0.25", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m",
+             "--entrypoint", "python", IMAGE, "-c", PREVIEW_PROXY, sandbox_id, str(port)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=30, check=True, env=_docker_env(),
+        )
+        proxy_created = True
+        subprocess.run(["docker", "start", proxy_id], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                       timeout=20, check=True, env=_docker_env())
+        mapped = subprocess.run(
+            ["docker", "port", proxy_id, "8080/tcp"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=10, check=True, env=_docker_env(),
+        ).stdout.strip().splitlines()
+        if not mapped or ":" not in mapped[0]:
+            raise RuntimeError("preview proxy did not receive a loopback port")
+        host_port = int(mapped[0].rsplit(":", 1)[1])
+        host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_HOST", "127.0.0.1")
+        screenshot_host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_INTERNAL_HOST", host)
+        record = {
+            "preview_id": preview_id, "project": project_name, "status": "running",
+            "port": host_port, "container_port": port,
+            "url": "http://" + host + ":" + str(host_port),
+            "screenshot_url": "http://" + screenshot_host + ":" + str(host_port),
+            "sandbox_id": sandbox_id, "proxy_id": proxy_id, "network_id": network_id,
+        }
+        with PREVIEW_LOCK:
+            PREVIEWS[preview_id] = record
+        return {key: record[key] for key in ("preview_id", "project", "status", "port", "container_port", "url", "screenshot_url")}
+    except Exception:
+        if proxy_created:
+            subprocess.run(["docker", "rm", "--force", proxy_id], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
+        if sandbox_created:
+            subprocess.run(["docker", "rm", "--force", sandbox_id], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
+        if network_created:
+            subprocess.run(["docker", "network", "rm", network_id], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
+        raise
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
+
+
+def preview_status(preview_id: str) -> dict[str, Any]:
+    with PREVIEW_LOCK:
+        record = PREVIEWS.get(preview_id)
+    if record is None:
+        raise RequestError("preview not found")
+    state = _preview_process_state(record["sandbox_id"])
+    return {
+        "preview_id": preview_id, "project": record["project"],
+        "status": state.get("status", "stopped"),
+        "port": record["port"], "url": record["url"],
+        "screenshot_url": record["screenshot_url"],
+        "returncode": state.get("returncode"),
+    }
+
+
+def preview_logs(preview_id: str) -> dict[str, Any]:
+    with PREVIEW_LOCK:
+        record = PREVIEWS.get(preview_id)
+    if record is None:
+        raise RequestError("preview not found")
+    return {
+        "preview_id": preview_id, "project": record["project"],
+        "status": _preview_process_state(record["sandbox_id"]).get("status", "stopped"),
+        "output": _preview_logs(record["sandbox_id"]),
+    }
+
+
+def stop_preview(preview_id: str) -> dict[str, Any]:
+    with PREVIEW_LOCK:
+        record = PREVIEWS.pop(preview_id, None)
+    if record is None:
+        return {"preview_id": preview_id, "status": "stopped"}
+    errors = []
+    for container in (record["proxy_id"], record["sandbox_id"]):
+        result = subprocess.run(
+            ["docker", "rm", "--force", container], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=15, check=False, env=_docker_env(),
+        )
+        if result.returncode and "No such container" not in result.stderr:
+            errors.append(result.stderr[-500:])
+    result = subprocess.run(
+        ["docker", "network", "rm", record["network_id"]], stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        timeout=15, check=False, env=_docker_env(),
+    )
+    if result.returncode and "not found" not in result.stderr.lower():
+        errors.append(result.stderr[-500:])
+    if errors:
+        raise RuntimeError("preview cleanup incomplete: " + "; ".join(errors))
+    return {"preview_id": preview_id, "status": "stopped"}
 
 
 class Handler(BaseHTTPRequestHandler):
