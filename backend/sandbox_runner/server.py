@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import socket
 import subprocess
 import tempfile
@@ -92,7 +93,7 @@ def validate_job(value: Any) -> tuple[str, list[str], int]:
 
 
 def _copy_workspace(source: Path, destination: Path) -> dict[str, str]:
-    """Copy only bounded regular project files; never follow symlinks or copy secrets."""
+    """Copy bounded regular files without following file symlinks."""
     destination.mkdir(parents=True, exist_ok=False)
     manifest: dict[str, str] = {}
     total_bytes = 0
@@ -111,22 +112,38 @@ def _copy_workspace(source: Path, destination: Path) -> dict[str, str]:
             relative = relative_dir / name
             if _sensitive(relative) or src.is_symlink():
                 continue
+            source_fd = None
+            target_fd = None
             try:
-                info = src.stat(follow_symlinks=False)
+                source_fd = os.open(src, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                info = os.fstat(source_fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_PROJECT_BYTES:
+                    os.close(source_fd)
+                    source_fd = None
+                    continue
+                file_count += 1
+                total_bytes += info.st_size
+                if file_count > MAX_PROJECT_FILES or total_bytes > MAX_PROJECT_BYTES:
+                    raise RequestError("project exceeds the runner's file-count or source-size limit")
+                target = out_dir / name
+                target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+                with os.fdopen(source_fd, "rb") as source_stream, os.fdopen(target_fd, "wb") as target_stream:
+                    source_fd = None
+                    target_fd = None
+                    shutil.copyfileobj(source_stream, target_stream, length=1024 * 1024)
+                target.chmod(0o666)
+                manifest[relative.as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest()
+            except FileExistsError:
+                continue
             except OSError:
                 continue
-            if not src.is_file() or info.st_size > MAX_PROJECT_BYTES:
-                continue
-            file_count += 1
-            total_bytes += info.st_size
-            if file_count > MAX_PROJECT_FILES or total_bytes > MAX_PROJECT_BYTES:
-                raise RequestError("project exceeds the runner's file-count or source-size limit")
-            target = out_dir / name
-            shutil.copyfile(src, target, follow_symlinks=False)
-            target.chmod(0o666)
-            manifest[relative.as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest()
+            finally:
+                if source_fd is not None:
+                    os.close(source_fd)
+                if target_fd is not None:
+                    os.close(target_fd)
     for current, directories, _ in os.walk(destination, topdown=False):
-        Path(current).chmod(0o777 if Path(current) == destination else 0o777)
+        Path(current).chmod(0o777)
     return manifest
 
 
@@ -272,7 +289,7 @@ def execute_job(value: Any) -> dict[str, Any]:
     # Keep the staging copy on the Docker host filesystem, but never mount that
     # host directory into the untrusted container. Only the container's bounded
     # tmpfs workspace is visible to the generated code.
-    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(PROJECTS_ROOT.parent)))
+    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(_staging_root())))
     stage_root.chmod(0o755)
     staged = stage_root / "workspace"
     container_created = False
@@ -877,7 +894,7 @@ def _cleanup_stale_jobs() -> None:
     # A runner crash can leave sanitized staging copies in the shared volume.
     # They are never used by active jobs after this single-instance service
     # starts, so remove only the reserved staging prefix.
-    for stale in PROJECTS_ROOT.parent.glob(".openmanus-sandbox-*"):
+    for stale in _staging_root().glob(".openmanus-sandbox-*"):
         if stale.is_dir() and not stale.is_symlink():
             shutil.rmtree(stale, ignore_errors=True)
 
@@ -906,6 +923,7 @@ def main() -> None:
         raise SystemExit("OPENMANUS_SANDBOX_TOKEN is required")
     if not PROJECTS_ROOT.is_dir():
         raise SystemExit("OPENMANUS_SANDBOX_PROJECTS_ROOT must be an existing directory")
+    _staging_root()
     _cleanup_stale_jobs()
     threading.Thread(target=_preview_reaper, name="preview-reaper", daemon=True).start()
     host = os.environ.get("OPENMANUS_SANDBOX_BIND", "127.0.0.1")
