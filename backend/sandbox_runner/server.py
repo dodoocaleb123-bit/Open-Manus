@@ -208,7 +208,7 @@ def _extract_workspace_archive(data: bytes, destination: Path) -> None:
         for member in archive:
             name = member.name
             posix = PurePosixPath(name)
-            if not name or "\\\\" in name or ":" in name or "\\x00" in name:
+            if not name or "\\" in name or ":" in name or "\x00" in name:
                 continue
             parts = tuple(part for part in posix.parts if part not in {"", "."})
             if posix.is_absolute() or not parts or any(part == ".." for part in parts):
