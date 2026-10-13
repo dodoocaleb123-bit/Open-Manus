@@ -133,3 +133,18 @@ def test_created_web_app_preview_fails_closed_without_proxy(tmp_path):
         workspace.start_preview({"project": "todo", "port": 18767})
 
 
+
+
+
+def test_workspace_rejects_symlinked_project_root(tmp_path):
+    root = tmp_path / "projects"
+    root.mkdir()
+    target = root / "real"
+    target.mkdir()
+    workspace = CodingWorkspace(root)
+    try:
+        (root / "alias").symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable on this host")
+    with pytest.raises(CodingWorkspaceError, match="cannot be a symlink"):
+        workspace.file_tree({"project": "alias"})
