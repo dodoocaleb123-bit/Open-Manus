@@ -452,6 +452,12 @@ def _cleanup_stale_jobs() -> None:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             timeout=30, check=True, env=_docker_env(),
         )
+    # A runner crash can leave sanitized staging copies in the shared volume.
+    # They are never used by active jobs after this single-instance service
+    # starts, so remove only the reserved staging prefix.
+    for stale in PROJECTS_ROOT.parent.glob(".openmanus-sandbox-*"):
+        if stale.is_dir() and not stale.is_symlink():
+            shutil.rmtree(stale, ignore_errors=True)
 
 
 def main() -> None:
