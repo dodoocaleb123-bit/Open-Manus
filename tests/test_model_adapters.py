@@ -81,3 +81,31 @@ def test_adapter_health_check_is_non_generating():
     health = asyncio.run(adapter.health_check())
     assert health.reachable is True
     assert calls == [("GET", "http://ollama.test/v1/models", b"")]
+
+
+
+def test_registry_accepts_reported_creative_latest_alias():
+    registry = ModelRegistry.from_environment({"CREATIVE_LLM_MODEL": "llama3.2:latest"})
+    assert registry.get(ModelRole.CREATIVE).model == "llama3.2:latest"
+
+
+def test_registry_rejects_invalid_global_settings():
+    with pytest.raises(ModelConfigurationError, match="LLM_REQUEST_TIMEOUT"):
+        ModelRegistry.from_environment({"LLM_REQUEST_TIMEOUT": "0"})
+    with pytest.raises(ModelConfigurationError, match="LLM_MAX_TOKENS"):
+        ModelRegistry.from_environment({"LLM_MAX_TOKENS": "0"})
+    with pytest.raises(ModelConfigurationError, match="LLM_TEMPERATURE"):
+        ModelRegistry.from_environment({"LLM_TEMPERATURE": "3"})
+
+
+def test_registry_diagnostics_are_per_role_and_do_not_expose_api_keys():
+    registry = ModelRegistry.from_environment({
+        "DEEPSEEK_CONTROLLER_API_KEY": "secret-controller-key",
+        "RESEARCH_LLM_API_KEY": "secret-research-key",
+    })
+    diagnostics = registry.diagnostics()
+    assert {item["role"] for item in diagnostics} == {role.value for role in ModelRole}
+    assert len(diagnostics) == 5
+    assert all(item["configured"] == "true" for item in diagnostics)
+    assert "secret-controller-key" not in repr(diagnostics)
+    assert "secret-research-key" not in repr(diagnostics)
