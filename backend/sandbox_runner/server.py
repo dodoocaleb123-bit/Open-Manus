@@ -171,6 +171,16 @@ def _safe_sync_back(source: Path, destination: Path, baseline: dict[str, str]) -
             os.replace(temporary, target)
 
 
+def _docker_env() -> dict[str, str]:
+    allowed = {
+        "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+        "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
+        "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
+        "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+    }
+    return {key: value for key, value in os.environ.items() if key.upper() in allowed}
+
+
 def _bounded_stream(stream: Any, target: bytearray) -> None:
     while True:
         chunk = stream.read(4096)
@@ -208,7 +218,7 @@ def execute_job(value: Any) -> dict[str, Any]:
         docker_create = [
             "docker", "create", "--name", job_id,
             "--network", "none", "--read-only",
-            "--cap-drop", "ALL", "--cap-add", "CHOWN",
+            "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID",
             "--security-opt", "no-new-privileges:true",
             "--pids-limit", "128", "--memory", "512m", "--memory-swap", "512m",
             "--cpus", "1.0", "--ulimit", "nofile=256:256",
@@ -220,7 +230,7 @@ def execute_job(value: Any) -> dict[str, Any]:
         ]
         subprocess.run(docker_create, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True, timeout=30, check=True,
-                       env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+                       env=_docker_env())
         container_created = True
         subprocess.run(["docker", "cp", str(staged) + os.sep + ".", job_id + ":/workspace/"],
                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
