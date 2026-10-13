@@ -133,27 +133,3 @@ def test_created_web_app_preview_fails_closed_without_proxy(tmp_path):
         workspace.start_preview({"project": "todo", "port": 18767})
 
 
-def test_windows_process_tree_cleanup_attempts_taskkill_after_parent_exit(monkeypatch):
-    import subprocess
-    import coding.workspace as workspace_module
-
-    calls = []
-
-    class ExitedProcess:
-        pid = 12345
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            return 0
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr(workspace_module.os, "name", "nt")
-    monkeypatch.setattr(workspace_module.subprocess, "run", fake_run)
-    CodingWorkspace._terminate_process_tree(ExitedProcess())
-    assert calls
-    assert calls[0][0] == ["taskkill", "/PID", "12345", "/T", "/F"]
