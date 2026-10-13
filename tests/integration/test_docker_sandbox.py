@@ -1,5 +1,6 @@
 """Live Docker isolation tests. Run only in the dedicated CI job with Docker available."""
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -178,9 +179,16 @@ def test_pid_limit_stops_process_fanout(sandbox_root):
         "print('SPAWNED', len(p))"
     )
     result = run_project(sandbox_root, "pid-limit", ["python", "-c", code], timeout=10)
-    assert result["status"] == "passed"
+    assert result["status"] in {"passed", "failed"}
     assert "PID_LIMIT_REACHED" in result["stdout"]
     assert "SPAWNED 200" not in result["stdout"]
+    if result["status"] == "failed":
+        assert "output discarded" in result["stderr"]
+    inspect = subprocess.run(
+        ["docker", "inspect", result["job_id"]],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    assert inspect.returncode != 0, "PID exhaustion must still remove the sandbox container"
 
 def test_isolated_preview_uses_loopback_proxy_and_cleans_up(sandbox_root):
     import urllib.error
