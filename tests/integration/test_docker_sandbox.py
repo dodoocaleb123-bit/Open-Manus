@@ -140,6 +140,32 @@ def test_descendants_are_killed_before_workspace_sync(sandbox_root):
     assert "parent-exit" in result["stdout"]
     assert not (project / "descendant.txt").exists()
 
+
+
+def test_isolated_preview_uses_loopback_proxy_and_cleans_up(sandbox_root):
+    import urllib.error
+    import urllib.request
+
+    project = sandbox_root / "preview"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>Sandbox preview</h1>", encoding="utf-8")
+    preview = server.start_preview({
+        "project": "preview",
+        "command": ["python", "-m", "http.server", "8000", "--bind", "0.0.0.0"],
+        "port": 8000,
+    })
+    try:
+        assert preview["url"].startswith("http://127.0.0.1:")
+        with urllib.request.urlopen(preview["url"], timeout=5) as response:
+            body = response.read().decode("utf-8")
+        assert "Sandbox preview" in body
+        assert server.preview_status(preview["preview_id"])["status"] == "running"
+    finally:
+        stopped = server.stop_preview(preview["preview_id"])
+    assert stopped["status"] == "stopped"
+    with pytest.raises((urllib.error.URLError, TimeoutError, OSError)):
+        urllib.request.urlopen(preview["url"], timeout=1)
+
 def test_timeout_kills_job_and_removes_container(sandbox_root):
     result = run_project(sandbox_root, "timeout", ["python", "-c", "import time; time.sleep(10)"], timeout=1)
     assert result["status"] == "timed_out"
