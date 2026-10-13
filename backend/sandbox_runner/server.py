@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import threading
 import time
 import uuid
@@ -184,6 +186,65 @@ def _docker_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key.upper() in allowed}
 
 
+
+def _archive_staged(source: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for current, directories, files in os.walk(source, topdown=True, followlinks=False):
+            current_path = Path(current)
+            directories[:] = [name for name in directories if not (current_path / name).is_symlink()]
+            for name in directories + files:
+                path = current_path / name
+                if path.is_symlink():
+                    continue
+                archive.add(path, arcname=path.relative_to(source).as_posix(), recursive=False)
+    return buffer.getvalue()
+
+
+def _extract_workspace_archive(data: bytes, destination: Path) -> None:
+    count = 0
+    total_bytes = 0
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        for member in archive:
+            name = member.name
+            posix = PurePosixPath(name)
+            if not name or "\\\\" in name or ":" in name or "\\x00" in name:
+                continue
+            parts = tuple(part for part in posix.parts if part not in {"", "."})
+            if posix.is_absolute() or not parts or any(part == ".." for part in parts):
+                continue
+            relative = Path(*parts)
+            if _sensitive(relative):
+                continue
+            target = destination / relative
+            if not target.resolve(strict=False).is_relative_to(destination.resolve()):
+                continue
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                # Never materialize symlinks, hard links, devices, or FIFOs.
+                continue
+            count += 1
+            total_bytes += member.size
+            if count > MAX_PROJECT_FILES or total_bytes > MAX_WORKSPACE_BYTES or member.size > MAX_WORKSPACE_BYTES:
+                raise RequestError("job output archive exceeds the runner's file-count or size limit")
+            parent = target.parent
+            chain = []
+            while parent != destination and destination in parent.parents:
+                chain.append(parent)
+                parent = parent.parent
+            if any(item.is_symlink() for item in chain) or target.is_symlink() or target.is_dir():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            stream = archive.extractfile(member)
+            if stream is None:
+                continue
+            with stream, target.open("wb") as output:
+                shutil.copyfileobj(stream, output, length=1024 * 1024)
+            target.chmod(0o666)
+
+
 def _bounded_stream(stream: Any, target: bytearray) -> None:
     while True:
         chunk = stream.read(4096)
@@ -237,9 +298,10 @@ def execute_job(value: Any) -> dict[str, Any]:
         subprocess.run(["docker", "start", job_id], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        timeout=30, check=True, env=_docker_env())
-        subprocess.run(["docker", "cp", str(staged) + os.sep + ".", job_id + ":/workspace/"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       text=True, timeout=30, check=True, env=_docker_env())
+        staged_archive = _archive_staged(staged)
+        subprocess.run(["docker", "exec", "-i", job_id, "tar", "-x", "-C", "/workspace"],
+                       input=staged_archive, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=30, check=True, env=_docker_env())
         attached = subprocess.Popen(
             ["docker", "exec", "--user", "65534:65534", "--workdir", "/workspace",
              job_id, *command],
@@ -291,9 +353,14 @@ def execute_job(value: Any) -> dict[str, Any]:
             subprocess.run(["docker", "exec", "--user", "0:0", job_id, "python", "-c", cleanup_code],
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=10, check=True, env=_docker_env())
-            subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
+            exported = subprocess.run(
+                ["docker", "exec", job_id, "tar", "-c", "-C", "/workspace", "."],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, check=True, env=_docker_env(),
+            )
+            if len(exported.stdout) > MAX_WORKSPACE_BYTES + MAX_PROJECT_FILES * 1024:
+                raise RequestError("job output archive exceeds the runner's size limit")
+            _extract_workspace_archive(exported.stdout, staged)
             _safe_sync_back(staged, project, baseline)
     finally:
         if container_created:
