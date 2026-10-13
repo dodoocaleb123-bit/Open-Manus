@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import tempfile
 import tarfile
@@ -608,14 +607,18 @@ def start_preview(value: Any) -> dict[str, Any]:
             raise RuntimeError("preview proxy did not receive a loopback port")
         host_port = int(mapped[0].rsplit(":", 1)[1])
         deadline = time.monotonic() + 5
+        probe_code = "import socket; s=socket.create_connection(('127.0.0.1',8080),timeout=1); s.close()"
         while True:
-            try:
-                with socket.create_connection(("127.0.0.1", host_port), timeout=0.25):
-                    break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("preview proxy did not accept loopback connections")
-                time.sleep(0.1)
+            probe = subprocess.run(
+                ["docker", "exec", proxy_id, "python", "-c", probe_code],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3, check=False, env=_docker_env(),
+            )
+            if probe.returncode == 0:
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("preview proxy did not accept internal connections")
+            time.sleep(0.1)
         host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_HOST", "127.0.0.1")
         screenshot_host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_INTERNAL_HOST", host)
         record = {
