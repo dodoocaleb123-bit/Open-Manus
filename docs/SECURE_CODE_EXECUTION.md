@@ -18,7 +18,7 @@ Dedicated sandbox runner service / isolated VM
 Ephemeral per-job execution environment
     |-- unprivileged UID
     |-- read-only base image
-    |-- one isolated writable project mount
+    |-- sanitized project copy in bounded writable tmpfs (no host bind mount)
     |-- no application secrets or host/runtime sockets
     |-- no network by default
     |-- dropped capabilities + no-new-privileges
@@ -35,12 +35,12 @@ The application must not expose a general container-management API or pass user-
 - Fail closed if the runner is absent, unhealthy, unauthorized, or rejects a request.
 - No host-process fallback, even for previews, tests, package scripts, or dependency installation.
 - Network is disabled by default. If package installation is required, use a separate explicit dependency-fetch policy or a controlled proxy; do not silently grant arbitrary egress.
-- Mount only the selected project into the job. Never mount home directories, credential stores, application config, the Docker socket, or unrelated projects.
+- Copy only bounded regular project files into an ephemeral tmpfs. Exclude environment files, key material, internal state, symlinks, and repository metadata. Never mount host directories, home directories, credential stores, application config, the Docker socket, or unrelated projects into the job.
 - The job receives no application environment variables or credentials.
 - Set explicit, server-enforced ceilings for CPU, memory, PIDs, writable storage, wall-clock time, and captured output.
-- Terminate the entire job environment, including descendants, after completion, timeout, cancellation, or runner disconnect.
+- Terminate and remove the entire job container after completion or timeout; the job has no persistent descendants. Cancellation and runner-disconnect cleanup must be integration-tested.
 - Previews use the same isolation. Publish only an explicitly selected port through a local-only proxy; do not bind arbitrary user processes to public interfaces.
-- Treat artifacts, logs, archives, and preview output as untrusted. Do not follow symlinks when exporting; exclude internal state and known secret files; cap traversal depth, file count, total bytes, and per-file size.
+- Treat artifacts, logs, archives, and preview output as untrusted. Do not follow symlinks when staging or syncing files; exclude internal state and known secret files; cap file count, total bytes, per-file size, and workspace tmpfs size.
 
 ## Threat model
 
