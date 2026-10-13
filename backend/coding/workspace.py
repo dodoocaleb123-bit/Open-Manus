@@ -158,22 +158,45 @@ class CodingWorkspace:
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        # Preview execution must use a runner-managed port proxy. The current
-        # runner protocol does not expose that lifecycle yet, so fail closed
-        # instead of launching generated servers on the Open-Manus host.
-        raise CodingWorkspaceError(
-            "Secure previews are unavailable until the isolated runner's preview proxy is configured. "
-            "No host process was started."
+        project = self._project(arguments.get("project", ""))
+        if not project.is_dir():
+            raise CodingWorkspaceError("project does not exist")
+        port = arguments.get("port", 8000)
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535")
+        supplied = arguments.get("command")
+        command = tuple(str(item) for item in supplied) if supplied else (
+            "python", "-m", "http.server", str(port), "--bind", "0.0.0.0"
         )
+        self._validate_command(command)
+        try:
+            result = self.runner.start_preview({
+                "project": project.name, "command": list(command), "port": port,
+            })
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+        return result | {"project": project.name, "command": command}
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
+        preview_id = str(arguments.get("preview_id", "")).strip()
+        try:
+            return self.runner.stop_preview(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
 
     def preview_status(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
+        preview_id = str(arguments.get("preview_id", "")).strip()
+        try:
+            return self.runner.preview_status(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
 
     def console_output(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
+        preview_id = str(arguments.get("preview_id", "")).strip()
+        try:
+            return self.runner.preview_logs(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
 
     def _project(self, value: Any) -> Path:
         name = str(value or "").strip()
