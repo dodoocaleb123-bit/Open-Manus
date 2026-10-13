@@ -216,7 +216,7 @@ def execute_job(value: Any) -> dict[str, Any]:
     try:
         baseline = _copy_workspace(project, staged)
         docker_create = [
-            "docker", "create", "--name", job_id,
+            "docker", "create", "--name", job_id, "--label", "openmanus.sandbox=true",
             "--network", "none", "--read-only",
             "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID",
             "--security-opt", "no-new-privileges:true",
@@ -269,7 +269,7 @@ def execute_job(value: Any) -> dict[str, Any]:
             # container's main process is an inert sleep, not generated code.
             subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, timeout=30, check=False, env=_docker_env())
+                           stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
             _safe_sync_back(staged, project, baseline)
     finally:
         if container_created:
@@ -343,11 +343,27 @@ class Handler(BaseHTTPRequestHandler):
             JOB_SLOTS.release()
 
 
+def _cleanup_stale_jobs() -> None:
+    listed = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", "label=openmanus.sandbox=true"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=10, check=True, env=_docker_env(),
+    )
+    ids = [item.strip() for item in listed.stdout.splitlines() if item.strip()]
+    if ids:
+        subprocess.run(
+            ["docker", "rm", "--force", *ids], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=30, check=True, env=_docker_env(),
+        )
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("OPENMANUS_SANDBOX_TOKEN is required")
     if not PROJECTS_ROOT.is_dir():
         raise SystemExit("OPENMANUS_SANDBOX_PROJECTS_ROOT must be an existing directory")
+    _cleanup_stale_jobs()
     host = os.environ.get("OPENMANUS_SANDBOX_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENMANUS_SANDBOX_PORT", "8765"))
     ThreadingHTTPServer((host, port), Handler).serve_forever()
