@@ -594,9 +594,15 @@ def start_preview(value: Any) -> dict[str, Any]:
         if state.get("status") != "running":
             raise RequestError("preview process did not become ready: " + _preview_logs(sandbox_id))
 
+        # Docker Engine/CLI combinations do not consistently retain an
+        # ephemeral host-port request (127.0.0.1::8080) for "docker create".
+        # Select a free loopback port and publish only on host loopback.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
+            port_socket.bind(("127.0.0.1", 0))
+            requested_host_port = port_socket.getsockname()[1]
         subprocess.run(
             ["docker", "create", "--name", proxy_id, "--label", "openmanus.sandbox=true",
-             "--network", network_id, "--publish", "127.0.0.1::8080/tcp",
+             "--network", network_id, "--publish", f"127.0.0.1:{requested_host_port}:8080/tcp",
              "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
              "--pids-limit", "32", "--memory", "128m", "--memory-swap", "128m",
              "--cpus", "0.25", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m",
