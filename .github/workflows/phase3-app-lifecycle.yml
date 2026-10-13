@@ -1,0 +1,51 @@
+name: Phase 3 app lifecycle
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/coding/**"
+      - "backend/sandbox_runner/**"
+      - "tests/test_phase3_app_lifecycle.py"
+      - "tests/test_sandbox_runner.py"
+      - ".github/workflows/phase3-app-lifecycle.yml"
+  push:
+    branches: ["phase-3/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle-and-security-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install "pytest>=8.3,<9" "cryptography>=43,<51"
+      - name: Workspace lifecycle tests
+        run: python -m pytest -q tests/test_phase3_app_lifecycle.py
+      - name: Sandbox request, staging, secret, and path security tests
+        run: python -m pytest -q tests/test_sandbox_runner.py
+      - name: Build isolated runner service image
+        run: docker build -f backend/sandbox_runner/Dockerfile.service -t openmanus-sandbox-runner:ci .
+      - name: Build untrusted workload image
+        run: docker build -f backend/sandbox_runner/Dockerfile -t openmanus-code-runner:ci .
+
+  windows-workspace-tests:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install "pytest>=8.3,<9" "cryptography>=43,<51"
+      - name: Workspace lifecycle tests
+        run: python -m pytest -q tests/test_phase3_app_lifecycle.py
