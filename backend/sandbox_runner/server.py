@@ -218,7 +218,7 @@ def execute_job(value: Any) -> dict[str, Any]:
         docker_create = [
             "docker", "create", "--name", job_id, "--label", "openmanus.sandbox=true",
             "--network", "none", "--read-only",
-            "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID",
+            "--cap-drop", "ALL", "--cap-add", "KILL",
             "--security-opt", "no-new-privileges:true",
             "--pids-limit", "128", "--memory", "512m", "--memory-swap", "512m",
             "--cpus", "1.0", "--ulimit", "nofile=256:256",
@@ -226,7 +226,7 @@ def execute_job(value: Any) -> dict[str, Any]:
             "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m,mode=1777",
             "--env", "HOME=/tmp",
             "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
-            IMAGE,
+            "--entrypoint", "/bin/sleep", IMAGE, "100000000",
         ]
         subprocess.run(docker_create, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
@@ -265,8 +265,29 @@ def execute_job(value: Any) -> dict[str, Any]:
         out_thread.join(timeout=3)
         err_thread.join(timeout=3)
         if result_status != "timed_out":
-            # Copy output only after the generated process has exited. The
-            # container's main process is an inert sleep, not generated code.
+            # The command may have daemonized children. Kill every remaining
+            # process running as the unprivileged job UID before copying its
+            # tmpfs output. The container's inert PID 1 runs as root with only
+            # CAP_KILL; generated code has UID 65534 and no capabilities.
+            cleanup_code = (
+                "import os,signal,time\\n"
+                "deadline=time.monotonic()+2\\n"
+                "while time.monotonic()<deadline:\\n"
+                " alive=False\\n"
+                " for name in os.listdir('/proc'):\\n"
+                "  if not name.isdigit(): continue\\n"
+                "  try:\\n"
+                "   status=open('/proc/'+name+'/status').read()\\n"
+                "   uid=status.split('Uid:\\t')[1].split()[0]\\n"
+                "   state=status.split('State:\\t')[1].split()[0]\\n"
+                "   if uid=='65534' and state!='Z': os.kill(int(name),signal.SIGKILL); alive=True\\n"
+                "  except (OSError,IndexError,ProcessLookupError): pass\\n"
+                " if not alive: break\\n"
+                " time.sleep(0.05)"
+            )
+            subprocess.run(["docker", "exec", "--user", "0:0", job_id, "python", "-c", cleanup_code],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True, timeout=10, check=True, env=_docker_env())
             subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=30, check=True, env=_docker_env())
