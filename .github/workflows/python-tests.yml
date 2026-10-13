@@ -29,3 +29,22 @@ jobs:
         run: python -m pip install "cryptography>=43,<51" "pytest>=8.3,<9" "pytest-asyncio>=0.25,<1" "ruff>=0.9,<1"
       - name: Run test suite
         run: python -m pytest -q
+
+  sandbox-integration:
+    name: "Docker sandbox integration (Linux)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install "cryptography>=43,<51" "pytest>=8.3,<9" "pytest-asyncio>=0.25,<1"
+      - name: Build sandbox execution image
+        run: docker build -f backend/sandbox_runner/Dockerfile -t openmanus-code-runner:latest backend/sandbox_runner
+      - name: Run live Docker isolation tests
+        env:
+          OPENMANUS_SANDBOX_INTEGRATION: "1"
+        run: python -m pytest -q tests/integration/test_docker_sandbox.py
