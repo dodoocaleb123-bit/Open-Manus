@@ -54,7 +54,7 @@ class SandboxRunnerClient:
     def start_preview(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not self.configured:
             raise SandboxUnavailable("Isolated previews are unavailable: configure the sandbox runner. Host preview fallback is disabled.")
-        return self._request("POST", "/v1/previews", payload, timeout=20)
+        return self._request("POST", "/v1/previews", payload, timeout=60)
 
     def stop_preview(self, preview_id: str) -> dict[str, Any]:
         return self._request("DELETE", self._preview_path(preview_id))
