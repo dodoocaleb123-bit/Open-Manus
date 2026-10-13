@@ -705,21 +705,33 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path != "/health":
-            self._send(404, {"error": "not found"})
-            return
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})
             return
-        ready = bool(TOKEN and PROJECTS_ROOT.is_dir())
-        self._send(200 if ready else 503, {"status": "ok" if ready else "not_configured"})
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            ready = bool(TOKEN and PROJECTS_ROOT.is_dir())
+            self._send(200 if ready else 503, {"status": "ok" if ready else "not_configured"})
+            return
+        match = re.fullmatch(r"/v1/previews/([A-Za-z0-9-]{1,64})(/logs)?", path)
+        if not match:
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            result = preview_logs(match.group(1)) if match.group(2) else preview_status(match.group(1))
+            self._send(200, result)
+        except RequestError as exc:
+            self._send(404, {"error": str(exc)})
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            self._send(503, {"error": "preview status unavailable", "detail": str(exc)[:500]})
 
     def do_POST(self) -> None:
-        if self.path != "/v1/jobs":
-            self._send(404, {"error": "not found"})
-            return
         if not self._authorized():
             self._send(401, {"error": "unauthorized"})
+            return
+        path = self.path.split("?", 1)[0]
+        if path not in {"/v1/jobs", "/v1/previews"}:
+            self._send(404, {"error": "not found"})
             return
         length = self.headers.get("Content-Length", "")
         if not length.isdigit() or not 1 <= int(length) <= MAX_BODY:
@@ -730,13 +742,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(int(length)).decode("utf-8"))
-            self._send(200, execute_job(payload))
+            result = execute_job(payload) if path == "/v1/jobs" else start_preview(payload)
+            self._send(200, result)
         except (UnicodeDecodeError, json.JSONDecodeError, RequestError) as exc:
             self._send(400, {"error": str(exc)})
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-            self._send(503, {"error": "sandbox execution unavailable", "detail": str(exc)[:500]})
+            self._send(503, {"error": "sandbox operation unavailable", "detail": str(exc)[:500]})
         finally:
             JOB_SLOTS.release()
+
+    def do_DELETE(self) -> None:
+        if not self._authorized():
+            self._send(401, {"error": "unauthorized"})
+            return
+        match = re.fullmatch(r"/v1/previews/([A-Za-z0-9-]{1,64})", self.path.split("?", 1)[0])
+        if not match:
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            self._send(200, stop_preview(match.group(1)))
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            self._send(503, {"error": "preview cleanup failed", "detail": str(exc)[:500]})
 
 
 def _cleanup_stale_jobs() -> None:
