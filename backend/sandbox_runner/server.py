@@ -299,9 +299,14 @@ def execute_job(value: Any) -> dict[str, Any]:
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        timeout=30, check=True, env=_docker_env())
         staged_archive = _archive_staged(staged)
-        subprocess.run(["docker", "exec", "-i", job_id, "tar", "-x", "-f", "-", "-C", "/workspace"],
-                       input=staged_archive, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       timeout=30, check=True, env=_docker_env())
+        seeded = subprocess.run(
+            ["docker", "exec", "-i", job_id, "tar", "-x", "-f", "-", "-C", "/workspace"],
+            input=staged_archive, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, check=False, env=_docker_env(),
+        )
+        if seeded.returncode:
+            detail = seeded.stderr.decode("utf-8", "replace")[-1000:]
+            raise RuntimeError("failed to seed sandbox workspace: " + detail)
         attached = subprocess.Popen(
             ["docker", "exec", "--user", "65534:65534", "--workdir", "/workspace",
              job_id, *command],
