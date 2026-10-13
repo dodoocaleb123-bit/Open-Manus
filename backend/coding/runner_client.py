@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Any, Mapping
@@ -49,6 +50,26 @@ class SandboxRunnerClient:
         # does not report a false failure while a bounded job keeps running.
         request_timeout = max(self.request_timeout, min(max(job_timeout, 1), 120) + 45)
         return self._request("POST", "/v1/jobs", payload, timeout=request_timeout)
+
+    def start_preview(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        if not self.configured:
+            raise SandboxUnavailable("Isolated previews are unavailable: configure the sandbox runner. Host preview fallback is disabled.")
+        return self._request("POST", "/v1/previews", payload, timeout=20)
+
+    def stop_preview(self, preview_id: str) -> dict[str, Any]:
+        return self._request("DELETE", self._preview_path(preview_id))
+
+    def preview_status(self, preview_id: str) -> dict[str, Any]:
+        return self._request("GET", self._preview_path(preview_id))
+
+    def preview_logs(self, preview_id: str) -> dict[str, Any]:
+        return self._request("GET", self._preview_path(preview_id) + "/logs")
+
+    @staticmethod
+    def _preview_path(preview_id: str) -> str:
+        if not isinstance(preview_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", preview_id):
+            raise SandboxUnavailable("Invalid preview identifier")
+        return "/v1/previews/" + preview_id
 
     def _request(
         self,
