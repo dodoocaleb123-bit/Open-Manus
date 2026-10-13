@@ -36,3 +36,56 @@ def test_job_schema_rejects_unapproved_commands(command):
 def test_job_schema_rejects_invalid_timeouts(timeout):
     with pytest.raises(RequestError):
         validate_job({"project": "demo", "command": ["python", "-c", "pass"], "timeout_seconds": timeout})
+
+
+
+def test_staging_excludes_secrets_repository_state_and_symlinks(tmp_path):
+    from sandbox_runner.server import _copy_workspace
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("print('ok')", encoding="utf-8")
+    (project / ".env").write_text("API_KEY=secret", encoding="utf-8")
+    (project / "private.pem").write_text("private-key", encoding="utf-8")
+    (project / ".git").mkdir()
+    (project / ".git" / "config").write_text("credential=secret", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (project / "escape.txt").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pass
+
+    staged = tmp_path / "staged"
+    manifest = _copy_workspace(project, staged)
+    assert "app.py" in manifest
+    assert not (staged / ".env").exists()
+    assert not (staged / "private.pem").exists()
+    assert not (staged / ".git").exists()
+    assert not (staged / "escape.txt").exists()
+
+
+def test_sync_back_copies_regular_changes_but_never_secrets_or_symlinks(tmp_path):
+    from sandbox_runner.server import _safe_sync_back
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("before", encoding="utf-8")
+    (project / ".env").write_text("API_KEY=keep", encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "app.py").write_text("after", encoding="utf-8")
+    (staged / "new.py").write_text("created", encoding="utf-8")
+    (staged / ".env").write_text("API_KEY=attacker", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (staged / "escape.py").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pass
+
+    _safe_sync_back(staged, project, {"app.py": "baseline-hash"})
+    assert (project / "app.py").read_text(encoding="utf-8") == "after"
+    assert (project / "new.py").read_text(encoding="utf-8") == "created"
+    assert (project / ".env").read_text(encoding="utf-8") == "API_KEY=keep"
+    assert not (project / "escape.py").exists()
