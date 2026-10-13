@@ -64,10 +64,12 @@ def test_generated_job_runs_unprivileged_and_syncs_only_project_output(sandbox_r
         ["python", "-c",
          "import os; from pathlib import Path; "
          "print('UID=' + str(os.getuid())); "
+         "print(next(line for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('CapEff:'))); "
          "Path('/workspace/generated.txt').write_text('created safely')"],
     )
     assert result["status"] == "passed", result["stderr"]
     assert "UID=65534" in result["stdout"]
+    assert "CapEff:\\t0000000000000000" in result["stdout"]
     assert (sandbox_root / "writes" / "generated.txt").read_text(encoding="utf-8") == "created safely"
 
 
