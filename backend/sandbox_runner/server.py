@@ -300,7 +300,7 @@ def execute_job(value: Any) -> dict[str, Any]:
                        timeout=30, check=True, env=_docker_env())
         staged_archive = _archive_staged(staged)
         seeded = subprocess.run(
-            ["docker", "exec", "-i", job_id, "tar", "-x", "-f", "-", "-C", "/workspace"],
+            ["docker", "exec", "-i", job_id, "tar", "-x", "--no-same-owner", "-f", "-", "-C", "/workspace"],
             input=staged_archive, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=30, check=False, env=_docker_env(),
         )
