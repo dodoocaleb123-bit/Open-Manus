@@ -167,7 +167,7 @@ def test_qwen_coder_workspace_fails_closed_without_runner(tmp_path):
     with pytest.raises(Exception, match="Host execution fallback is disabled"):
         workspace.run_tests({"project": "app", "command": ["pytest", "-q"]})
     workspace.write_file({"project": "app", "path": "fixed.py", "content": "print('fixed')\\n"})
-    with pytest.raises(Exception, match="Secure previews are unavailable"):
+    with pytest.raises(Exception, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "app", "port": 18766})
 
 
@@ -269,7 +269,7 @@ def test_e2e_visual_preview_analysis_fails_closed_without_proxy(tmp_path):
     workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "preview"})
     workspace.write_file({"project": "preview", "path": "index.html", "content": "<h1>Preview</h1>"})
-    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+    with pytest.raises(CodingWorkspaceError, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "preview", "port": 18767, "viewport": "mobile"})
 
 
