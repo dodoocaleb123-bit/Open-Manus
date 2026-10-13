@@ -23,7 +23,7 @@ class Registry:
 
 
 def test_preview_viewports_console_and_screenshot(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "demo"})
     workspace.write_file({"project": "demo", "path": "index.html", "content": "<h1>Hello preview</h1>"})
     preview = workspace.start_preview({"project": "demo", "port": 18766, "viewport": "mobile"})
@@ -46,7 +46,7 @@ def test_preview_viewports_console_and_screenshot(tmp_path):
 
 
 def test_code_view_and_typed_artifacts_persist(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "demo"})
     workspace.write_file({"project": "demo", "path": "report.md", "content": "# Research"})
     store = SQLiteStateStore(tmp_path / "artifacts.sqlite3")
