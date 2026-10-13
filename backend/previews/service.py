@@ -46,7 +46,7 @@ class PreviewService:
         target = project / ".openmanus" / "previews" / f"{preview_id}-{viewport}.png"
         target.parent.mkdir(parents=True, exist_ok=True)
         if self.screenshotter is not None:
-            result = dict(self.screenshotter(status["url"], self.VIEWPORTS[viewport], target))
+            result = dict(self.screenshotter(status.get("screenshot_url", status["url"]), self.VIEWPORTS[viewport], target))
         else:
             try:
                 from playwright.sync_api import sync_playwright
@@ -56,7 +56,7 @@ class PreviewService:
                 with sync_playwright() as playwright:
                     browser = playwright.chromium.launch(headless=True)
                     page = browser.new_page(viewport=self.VIEWPORTS[viewport], device_scale_factor=1)
-                    page.goto(status["url"], wait_until="networkidle", timeout=30000)
+                    page.goto(status.get("screenshot_url", status["url"]), wait_until="networkidle", timeout=30000)
                     page.screenshot(path=str(target), full_page=True)
                     browser.close()
                 result = {"path": str(target)}
