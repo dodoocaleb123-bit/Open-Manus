@@ -608,13 +608,28 @@ def start_preview(value: Any) -> dict[str, Any]:
         subprocess.run(["docker", "start", proxy_id], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        timeout=20, check=True, env=_docker_env())
-        mapped = subprocess.run(
+        mapped_result = subprocess.run(
             ["docker", "port", proxy_id, "8080/tcp"], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            timeout=10, check=True, env=_docker_env(),
-        ).stdout.strip().splitlines()
-        if not mapped or ":" not in mapped[0]:
-            raise RuntimeError("preview proxy did not receive a loopback port")
+            timeout=10, check=False, env=_docker_env(),
+        )
+        mapped = mapped_result.stdout.strip().splitlines()
+        if mapped_result.returncode or not mapped or ":" not in mapped[0]:
+            state_result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}}", proxy_id],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=5, check=False, env=_docker_env(),
+            )
+            logs_result = subprocess.run(
+                ["docker", "logs", "--tail", "80", proxy_id],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=5, check=False, env=_docker_env(),
+            )
+            raise RuntimeError(
+                "preview proxy port mapping unavailable: state=" + state_result.stdout.strip()
+                + "; port_error=" + mapped_result.stderr[-300:]
+                + "; logs=" + (logs_result.stdout + logs_result.stderr)[-1000:]
+            )
         host_port = int(mapped[0].rsplit(":", 1)[1])
         deadline = time.monotonic() + 5
         probe_code = "import socket; s=socket.create_connection(('127.0.0.1',8080),timeout=1); s.close()"
