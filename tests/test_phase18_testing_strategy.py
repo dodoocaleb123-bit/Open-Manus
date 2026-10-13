@@ -296,3 +296,61 @@ def test_e2e_secret_protected_operation(tmp_path):
     result = secure.use_secret({"secret_ref": ref["secret_ref"]})
     assert result["value_exposed"] is False and result["secret_ref"] == ref["secret_ref"]
     secrets.close()
+
+
+
+@pytest.mark.parametrize("role", ["research", "coder", "vision", "creative"])
+def test_all_four_specialist_handoffs_return_to_deepseek(role):
+    loop, store, controller = make_loop([
+        decision("Delegate this focused task.", command=command("delegate_to_model", {
+            "role": role,
+            "objective": "Perform the specialist task",
+            "expected_output": "A structured result with summary and evidence",
+            "inputs": {"test": True},
+        })),
+        decision("I reviewed the specialist result and completed the task.", status="completed", command=command("complete_task", {})),
+    ])
+    result = run(loop.start("Run the specialist workflow"))
+    assert result.status is TaskStatus.COMPLETED
+    assert len(controller.requests) == 2
+    specialist_messages = [message for message in result.messages if "specialist result" in str(message)]
+    assert specialist_messages
+    assert "I reviewed the specialist result" in result.final_message
+    store.close()
+
+
+def test_controller_transient_failure_is_retried_once():
+    loop, store, adapter = make_loop([
+        decision("Task completed.", status="completed", command=command("complete_task", {})),
+    ])
+    original_generate = adapter.generate
+    state = {"calls": 0}
+
+    async def flaky_generate(request):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise TimeoutError("temporary controller timeout")
+        return await original_generate(request)
+
+    adapter.generate = flaky_generate
+    result = run(loop.start("Complete a simple task"))
+    assert result.status is TaskStatus.COMPLETED
+    assert state["calls"] == 2
+    assert any(event.kind == "controller_retry" for event in result.events)
+    store.close()
+
+
+def test_controller_retry_limit_is_configurable():
+    loop, store, adapter = make_loop([
+        decision("Task completed.", status="completed", command=command("complete_task", {})),
+    ])
+    loop.max_controller_retries = 0
+
+    async def always_fail(_request):
+        raise RuntimeError("provider offline")
+
+    adapter.generate = always_fail
+    result = run(loop.start("This must fail cleanly"))
+    assert result.status is TaskStatus.FAILED
+    assert "provider offline" in (result.error or "")
+    store.close()

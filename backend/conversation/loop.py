@@ -59,16 +59,20 @@ class DeepSeekConversationLoop:
         *,
         max_turns: int = 20,
         model_timeout_seconds: float = 90.0,
+        max_controller_retries: int = 1,
         event_sink: EventSink | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be positive")
         if model_timeout_seconds <= 0:
             raise ValueError("model_timeout_seconds must be positive")
+        if max_controller_retries < 0:
+            raise ValueError("max_controller_retries cannot be negative")
         self.controller = controller
         self.executor = executor
         self.max_turns = max_turns
         self.model_timeout_seconds = model_timeout_seconds
+        self.max_controller_retries = max_controller_retries
         self.event_sink = event_sink
         self._messages: dict[str, list[Mapping[str, Any]]] = {}
         self._events: dict[str, list[ConversationEvent]] = {}
@@ -213,18 +217,28 @@ class DeepSeekConversationLoop:
             if task.status is not TaskStatus.RUNNING:
                 return self._result(task_id)
             self._turns[task_id] += 1
-            try:
-                decision = await asyncio.wait_for(
-                    self.controller.decide(self._messages[task_id], context=context, tools=tools),
-                    timeout=self.model_timeout_seconds,
-                )
-            except asyncio.TimeoutError:
-                error = f"Controller model timed out after {self.model_timeout_seconds:g} seconds"
-                self.executor.store.update_task(task_id, status=TaskStatus.FAILED, last_error=error)
-                await self._emit(task_id, ConversationEvent("error", task_id, error, TaskStatus.FAILED))
-                return self._result(task_id, error=error)
-            except Exception as exc:
-                error = f"Controller request failed: {type(exc).__name__}: {exc}"
+            decision = None
+            last_error: Exception | None = None
+            for attempt in range(self.max_controller_retries + 1):
+                try:
+                    decision = await asyncio.wait_for(
+                        self.controller.decide(self._messages[task_id], context=context, tools=tools),
+                        timeout=self.model_timeout_seconds,
+                    )
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < self.max_controller_retries:
+                        await self._emit(task_id, ConversationEvent(
+                            "controller_retry", task_id,
+                            f"Controller request failed ({type(exc).__name__}); retry {attempt + 1} of {self.max_controller_retries}",
+                            TaskStatus.RUNNING,
+                        ))
+            if decision is None:
+                if isinstance(last_error, asyncio.TimeoutError):
+                    error = f"Controller model timed out after {self.model_timeout_seconds:g} seconds"
+                else:
+                    error = f"Controller request failed: {type(last_error).__name__}: {last_error}"
                 self.executor.store.update_task(task_id, status=TaskStatus.FAILED, last_error=error)
                 await self._emit(task_id, ConversationEvent("error", task_id, error, TaskStatus.FAILED))
                 return self._result(task_id, error=error)
