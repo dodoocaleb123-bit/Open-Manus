@@ -117,6 +117,27 @@ def test_output_capture_is_bounded(sandbox_root):
     assert len(result["stdout"].encode("utf-8")) <= server.MAX_OUTPUT
 
 
+
+
+def test_descendants_are_killed_before_workspace_sync(sandbox_root):
+    project = sandbox_root / "descendants"
+    project.mkdir()
+    child_code = "import time; time.sleep(2); open('/workspace/descendant.txt','w').write('survived')"
+    result = server.execute_job({
+        "project": "descendants",
+        "command": [
+            "python", "-c",
+            "import subprocess,sys; "
+            "subprocess.Popen([sys.executable,'-c',sys.argv[1]], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print('parent-exit')",
+            child_code,
+        ],
+        "timeout_seconds": 10,
+    })
+    assert result["status"] == "passed", result["stderr"]
+    assert "parent-exit" in result["stdout"]
+    assert not (project / "descendant.txt").exists()
+
 def test_timeout_kills_job_and_removes_container(sandbox_root):
     result = run_project(sandbox_root, "timeout", ["python", "-c", "import time; time.sleep(10)"], timeout=1)
     assert result["status"] == "timed_out"
