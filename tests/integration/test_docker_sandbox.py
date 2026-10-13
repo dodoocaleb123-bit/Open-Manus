@@ -146,3 +146,30 @@ def test_timeout_kills_job_and_removes_container(sandbox_root):
         capture_output=True, text=True, timeout=10, check=True,
     )
     assert result["job_id"] not in inspect.stdout
+
+
+
+def test_container_has_no_linux_capabilities(sandbox_root):
+    result = run_project(
+        sandbox_root, "capabilities",
+        ["python", "-c",
+         "from pathlib import Path; "
+         "status=Path('/proc/self/status').read_text(); "
+         "caps=next(line.split()[1] for line in status.splitlines() if line.startswith('CapEff:')); "
+         "print('CAP_EFF=' + caps)"],
+    )
+    assert result["status"] == "passed", result["stderr"]
+    assert "CAP_EFF=0000000000000000" in result["stdout"]
+
+
+def test_job_cannot_access_runner_workspace_root(sandbox_root):
+    result = run_project(
+        sandbox_root, "runner-root",
+        ["python", "-c",
+         "from pathlib import Path; "
+         "root=Path(" + repr(str(sandbox_root)) + "); "
+         "print('RUNNER_ROOT_VISIBLE' if root.exists() else 'RUNNER_ROOT_HIDDEN')"],
+    )
+    assert result["status"] == "passed", result["stderr"]
+    assert "RUNNER_ROOT_HIDDEN" in result["stdout"]
+    assert "RUNNER_ROOT_VISIBLE" not in result["stdout"]
