@@ -40,10 +40,31 @@ def test_workspace_files_commands_snapshots_and_export(tmp_path):
     result = workspace.run_tests({"project": "demo", "command": ["pytest", "-q"]})
     assert result["status"] == "passed"
     assert result["returncode"] == 0
+    # Archives must not recursively include prior snapshots, internal logs,
+    # secrets, or symlinks that point outside the project.
+    project = tmp_path / "projects" / "demo"
+    (project / ".env").write_text("API_KEY=do-not-export", encoding="utf-8")
+    (project / "private.pem").write_text("private-key", encoding="utf-8")
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("outside", encoding="utf-8")
+    try:
+        (project / "outside-link.txt").symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pass  # Symlink creation may require elevated permissions on Windows.
+
     snapshot = workspace.snapshot({"project": "demo"})
     export = workspace.export_project({"project": "demo"})
     assert Path(snapshot["path"]).is_file()
     assert Path(export["path"]).is_file()
+    import zipfile
+    for archive_path in (snapshot["path"], export["path"]):
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+        assert "README.md" in names
+        assert not any(name.startswith(".openmanus/") for name in names)
+        assert ".env" not in names
+        assert "private.pem" not in names
+        assert "outside-link.txt" not in names
 
 
 def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
