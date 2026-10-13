@@ -15,7 +15,7 @@ The repository has a substantial documented architecture: DeepSeek-first control
 
 - Repository documentation inspected: `README.md`, `docs/ARCHITECTURE.md`, `docs/PHASE_1.md`, `docs/PHASE_12.md`, `docs/PHASE_15.md`, `docs/PHASE_17.md`, `docs/PHASE_18.md`, `scripts/check_environment.py`, `pyproject.toml`, and `backend/openmanus-core/README.md`.
 - Specification extracted from the uploaded DOCX; ZIP also contains six design-intelligence files and a nested GUI behavior ZIP.
-- Latest recorded CI run: [run 38332207875](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38332207875). Linux pytest passed, Windows pytest passed, and Linux Docker sandbox integration passed. The sandbox job built both images, validated the private runner compose configuration, and ran live Docker isolation tests.
+- Latest recorded CI run on this audit branch: [run 38334279283](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38334279283). Linux pytest, Windows pytest, and Linux Docker sandbox integration all completed successfully. The sandbox job built both images, validated the private runner compose configuration, and ran live Docker isolation tests. The earlier main-baseline run [38332207875](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38332207875) also passed.
 - Test strategy documented in `docs/PHASE_18.md` uses deterministic local fake adapters/fixtures so CI does not require Ollama, browser credentials, GitHub credentials, or internet access.
 - **Local re-run status: BLOCKED in this audit environment.** A shallow clone attempt failed because this execution environment cannot resolve `github.com`; therefore I did not execute the current checkout's pytest suite locally and will not invent a local pass/fail count. The CI result above is the verified test baseline available.
 - **Laptop deployment status: NOT VERIFIED by this audit.** CI does not validate the user's Docker Desktop, current Ollama model tags, memory pressure, preview URL routing, or the full local GUI.
@@ -72,7 +72,7 @@ The repository's `pyproject.toml` declares Python `>=3.12`, pytest/pytest-asynci
 | Dimension | Baseline |
 |---|---|
 | Audit date | 2026-10-13 |
-| Latest recorded CI | [38332207875](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38332207875) |
+| Latest recorded CI | [38334279283](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38334279283) — audit branch |
 | Linux pytest | Passed in CI |
 | Windows pytest | Passed in CI |
 | Linux Docker isolation integration | Passed in CI |
@@ -90,8 +90,9 @@ The repository's `pyproject.toml` declares Python `>=3.12`, pytest/pytest-asynci
 - [x] Inspect architecture, phase guides, environment checker and project test strategy.
 - [x] Record current CI result and distinguish it from local/laptop verification.
 - [x] Create prioritized actionable GitHub issues.
-- [ ] Inspect every runtime module and every test directly in a runnable checkout.
-- [ ] Execute the full test suite locally and publish exact counts.
+- [x] Re-run CI on the audit branch after the runtime-level addendum: Linux pytest, Windows pytest, and Linux Docker sandbox integration all passed in run [38334279283](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38334279283).
+- [ ] Inspect every runtime module and every test directly in a runnable checkout; source-level review is targeted, not exhaustive.
+- [ ] Execute the full test suite locally and publish exact counts; blocked in this audit environment by inability to resolve `github.com`.
 - [ ] Run live model/provider and browser-level tests.
 - [ ] Validate the GUI against the complete recording.
 - [ ] Validate actual .pptx/.pdf/image artifacts and each named integration.
@@ -123,12 +124,12 @@ Additional direct source files inspected:
 
 ### CI rerun on the audit PR
 
-The audit PR commit `95207743ad03c5c5a5c6a10a57489f7538009465` triggered [workflow run 38333950834](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38333950834). The following jobs all completed successfully:
+The audit PR commit `99bb4ca2f0dd46fa3608dbf6030336af8b2ea104` triggered [workflow run 38334279283](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38334279283). The following jobs all completed successfully:
 - `pytest (ubuntu-latest)`
 - `pytest (windows-latest)`
 - `Docker sandbox integration (Linux)`
 
-This confirms the repository's CI checks pass on the audit branch. The connector returns job/step conclusions but not the test runner's printed summary, so **exact test counts remain unavailable** from this evidence. No claim is made that live Ollama, the image service, browser E2E, generated PowerPoint/PDF, or target laptop was tested.
+This confirms the repository's CI checks pass on the audit branch. The connector returns job/step conclusions but not the test runner's printed summary, so **exact test counts remain unavailable** from this evidence. No claim is made that live Ollama, the image service, browser E2E, generated PowerPoint/PDF, or target laptop was tested. The workflow connector exposes job and step conclusions but not the printed test summary, so exact test counts remain unavailable.
 
 ### Runtime-level priority adjustment
 
