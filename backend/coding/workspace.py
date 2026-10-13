@@ -1,10 +1,7 @@
 """Controlled coding workspace tools for Qwen2.5-Coder:7b."""
 from __future__ import annotations
 
-import json
-import os
 import shutil
-import subprocess
 import time
 import uuid
 import zipfile
@@ -33,19 +30,6 @@ class CommandResult:
         return asdict(self)
 
 
-@dataclass
-class PreviewProcess:
-    preview_id: str
-    project_dir: str
-    command: tuple[str, ...]
-    port: int
-    process: subprocess.Popen[str]
-    started_at: float
-    log_path: str
-    log_handle: Any
-    viewport: str = "desktop"
-
-
 class CodingWorkspace:
     """Manage project workspaces without allowing arbitrary host access."""
 
@@ -66,7 +50,6 @@ class CodingWorkspace:
         self.root.mkdir(parents=True, exist_ok=True)
         self.timeout_seconds = timeout_seconds
         self.runner = runner or SandboxRunnerClient()
-        self._previews: dict[str, PreviewProcess] = {}
 
     def create_project(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", arguments.get("name", "")))
@@ -190,28 +173,13 @@ class CodingWorkspace:
         )
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        self._terminate_process_tree(preview.process)
-        preview.log_handle.close()
-        self._previews.pop(preview_id, None)
-        return {"preview_id": preview_id, "status": "stopped"}
+        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
 
     def preview_status(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "port": preview.port, "status": "running" if preview.process.poll() is None else "stopped", "returncode": preview.process.poll(), "url": f"http://127.0.0.1:{preview.port}", "viewport": preview.viewport, "log_path": preview.log_path}
+        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
+
     def console_output(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        path = Path(preview.log_path)
-        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "status": "running" if preview.process.poll() is None else "stopped", "output": path.read_text(encoding="utf-8", errors="replace")[-50000:] if path.exists() else "", "log_path": str(path)}
+        raise CodingWorkspaceError("Secure previews are unavailable until an isolated preview proxy is implemented")
 
     def _project(self, value: Any) -> Path:
         name = str(value or "").strip()
@@ -242,67 +210,6 @@ class CodingWorkspace:
             raise CodingWorkspaceError("git command is read-only/initialization allowlisted")
         if preview and command[0] not in {"python", "python3", "node", "npm", "pnpm", "yarn"}:
             raise CodingWorkspaceError("preview command is not allowlisted")
-
-    @staticmethod
-    def _terminate_process_tree(process: subprocess.Popen[Any], *, timeout_seconds: float = 5.0) -> None:
-        """Stop a command and its descendants, not just the direct child process."""
-        if os.name == "nt":
-            # Do not skip taskkill just because the direct child has exited:
-            # it may have spawned a worker that outlives it. Windows' taskkill
-            # /T is best-effort in that case, but attempting it is safer than
-            # returning early and guaranteeing we never try to clean up.
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=timeout_seconds, check=False,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        else:
-            import signal
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        try:
-            process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                import signal
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
-                process.kill()
-            process.wait(timeout=timeout_seconds)
-
-    @staticmethod
-    def _safe_environment() -> dict[str, str]:
-        # Preserve the minimum platform variables required to launch child
-        # processes. Windows Python subprocesses can fail without SYSTEMROOT,
-        # TEMP, and PATHEXT even when PATH is present.
-        allowed = {
-            "PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH",
-            "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PATHEXT", "COMSPEC",
-            "USERPROFILE", "APPDATA", "LOCALAPPDATA",
-        }
-        return {key: value for key, value in os.environ.items() if key.upper() in allowed}
-
-    @staticmethod
-    def _resource_limits() -> None:
-        """Apply conservative POSIX limits; only passed to subprocesses on POSIX."""
-        if os.name != "posix":
-            return
-        import resource
-
-        cpu = max(1, int(os.getenv("OPENMANUS_COMMAND_CPU_SECONDS", "120")))
-        memory = max(128, int(os.getenv("OPENMANUS_COMMAND_MEMORY_MB", "1024"))) * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     @staticmethod
     def _zip_project(project: Path, target: Path) -> None:
