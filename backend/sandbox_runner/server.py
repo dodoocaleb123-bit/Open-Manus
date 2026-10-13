@@ -270,19 +270,19 @@ def execute_job(value: Any) -> dict[str, Any]:
             # tmpfs output. The container's inert PID 1 runs as root with only
             # CAP_KILL; generated code has UID 65534 and no capabilities.
             cleanup_code = (
-                "import os,signal,time\\n"
-                "deadline=time.monotonic()+2\\n"
-                "while time.monotonic()<deadline:\\n"
-                " alive=False\\n"
-                " for name in os.listdir('/proc'):\\n"
-                "  if not name.isdigit(): continue\\n"
-                "  try:\\n"
-                "   status=open('/proc/'+name+'/status').read()\\n"
-                "   uid=status.split('Uid:\\t')[1].split()[0]\\n"
-                "   state=status.split('State:\\t')[1].split()[0]\\n"
-                "   if uid=='65534' and state!='Z': os.kill(int(name),signal.SIGKILL); alive=True\\n"
-                "  except (OSError,IndexError,ProcessLookupError): pass\\n"
-                " if not alive: break\\n"
+                "import os,signal,time\n"
+                "deadline=time.monotonic()+2\n"
+                "while time.monotonic()<deadline:\n"
+                " alive=False\n"
+                " for name in os.listdir('/proc'):\n"
+                "  if not name.isdigit(): continue\n"
+                "  try:\n"
+                "   status=open('/proc/'+name+'/status').read()\n"
+                "   uid=status.split('Uid:\\t')[1].split()[0]\n"
+                "   state=status.split('State:\\t')[1].split()[0]\n"
+                "   if uid=='65534' and state!='Z': os.kill(int(name),signal.SIGKILL); alive=True\n"
+                "  except (OSError,IndexError,ProcessLookupError): pass\n"
+                " if not alive: break\n"
                 " time.sleep(0.05)"
             )
             subprocess.run(["docker", "exec", "--user", "0:0", job_id, "python", "-c", cleanup_code],
