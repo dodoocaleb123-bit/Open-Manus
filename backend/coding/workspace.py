@@ -179,7 +179,10 @@ class CodingWorkspace:
         name = str(value or "").strip()
         if not name or Path(name).name != name or name in {".", ".."}:
             raise CodingWorkspaceError("project must be a simple workspace directory name")
-        project = (self.root / name).resolve()
+        candidate = self.root / name
+        if candidate.is_symlink():
+            raise CodingWorkspaceError("project directory cannot be a symlink")
+        project = candidate.resolve()
         if self.root not in project.parents:
             raise CodingWorkspaceError("project escapes workspace root")
         return project
