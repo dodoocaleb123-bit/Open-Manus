@@ -117,7 +117,7 @@ def test_deepseek_approval_failure_and_recovery():
     loop, store, _ = make_loop([
         decision("I will perform the operation.", command=command("run_tool", {"tool": "risky", "arguments": {}})),
         decision("The operation recovered.", status="completed", command=command("complete_task", {})),
-    ], tools=(ToolSpec("risky", risky),))
+    ], tools=(ToolSpec("risky", risky, retry_safe=True),))
     failed = run(loop.start("Do the risky operation"))
     assert failed.status is TaskStatus.FAILED
     recovered = run(loop.retry(failed.task_id))
@@ -161,7 +161,7 @@ def test_qwen_citations_and_multi_source_comparison():
 # Qwen Coder role tests
 
 def test_qwen_coder_project_edit_test_preview_and_error_repair(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     assert workspace.create_project({"project": "app"})["created"]
     workspace.write_file({"project": "app", "path": "test_app.py", "content": "def test_ok():\n    assert 2 + 2 == 4\n"})
     assert workspace.run_tests({"project": "app", "command": ["pytest", "-q"]})["status"] == "passed"
@@ -262,14 +262,14 @@ def test_e2e_internet_research_and_research_to_website_generation(tmp_path):
             return {"url": arguments["url"], "title": "Shop", "text": "hero catalog checkout", "dynamic_hint": False}
 
     research = FakeResearch().collect_sources({"objective": "Research cosmetic layouts", "queries": ["cosmetic"], "max_sources": 1})
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "cosmetic"})
     workspace.write_file({"project": "cosmetic", "path": "index.html", "content": "<main>hero catalog checkout</main>"})
     assert research["citations"] and workspace.read_file({"project": "cosmetic", "path": "index.html"})["content"].startswith("<main>")
 
 
 def test_e2e_visual_preview_analysis(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     workspace.create_project({"project": "preview"})
     workspace.write_file({"project": "preview", "path": "index.html", "content": "<h1>Preview</h1>"})
     preview = workspace.start_preview({"project": "preview", "port": 18767, "viewport": "mobile"})
@@ -298,7 +298,7 @@ def test_e2e_secret_protected_operation(tmp_path):
     secrets = SecretStore(tmp_path / "secrets.sqlite3", "master-key")
     ref = secrets.put("local", "GitHub token", "do-not-log")
     assert ref["value_exposed"] is False and "do-not-log" not in str(secrets.describe("local"))
-    workspace = CodingWorkspace(tmp_path / "projects")
+    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
     secure = SecureActions(workspace)
     result = secure.use_secret({"secret_ref": ref["secret_ref"]})
     assert result["value_exposed"] is False and result["secret_ref"] == ref["secret_ref"]
