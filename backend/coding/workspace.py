@@ -1,7 +1,6 @@
 """Controlled coding workspace tools for Qwen2.5-Coder:7b."""
 from __future__ import annotations
 
-import shutil
 import time
 import uuid
 import zipfile
@@ -33,11 +32,8 @@ class CommandResult:
 class CodingWorkspace:
     """Manage project workspaces without allowing arbitrary host access."""
 
-    ALLOWED_COMMANDS = {
-        "python", "python3", "pytest", "pip", "pip3", "uv", "npm", "npx", "node", "yarn", "pnpm", "git"
-    }
+    ALLOWED_COMMANDS = {"python", "python3", "pytest", "npm", "npx", "node"}
     SAFE_NPM_SUBCOMMANDS = {"test", "run", "install", "ci", "build", "lint", "check"}
-    SAFE_PIP_SUBCOMMANDS = {"install", "list", "show", "freeze"}
 
     def __init__(
         self,
@@ -92,14 +88,12 @@ class CodingWorkspace:
         packages = [str(item) for item in arguments.get("packages", [])]
         if any(not item or item.startswith("-") or any(ch in item for ch in ";&|`$\n\r") for item in packages):
             raise CodingWorkspaceError("dependency names contain unsafe characters")
-        if manager == "npm":
-            command = ["npm", "install", *packages]
-        elif manager in {"pip", "pip3"}:
-            command = [manager, "install", *packages]
-        elif manager == "uv":
-            command = ["uv", "add", *packages]
-        else:
-            raise CodingWorkspaceError("dependency manager must be npm, pip, pip3, or uv")
+        if manager != "npm":
+            raise CodingWorkspaceError(
+                "Only npm operations are currently supported by the isolated runner. "
+                "Python dependency installation remains disabled until a controlled dependency-fetch policy is implemented."
+            )
+        command = ["npm", "install", *packages]
         return self.run_command({**arguments, "command": command})
 
     def run_tests(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
