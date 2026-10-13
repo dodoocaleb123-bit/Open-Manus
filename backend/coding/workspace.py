@@ -334,9 +334,26 @@ class CodingWorkspace:
 
     @staticmethod
     def _zip_project(project: Path, target: Path) -> None:
+        """Archive project files without internal state, secrets, or symlinks."""
+        secret_names = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+        secret_suffixes = {".pem", ".key", ".p12", ".pfx"}
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in project.rglob("*"):
-                if path == target or ".git" in path.parts:
+                relative = path.relative_to(project)
+                # Internal snapshots/previews can contain previous archives and
+                # logs; excluding the whole directory also prevents recursive
+                # snapshot growth and avoids exporting internal state.
+                if path == target or ".git" in relative.parts or ".openmanus" in relative.parts:
+                    continue
+                # Never follow or archive symlinks: their targets may be outside
+                # the project and can change between validation and archiving.
+                if path.is_symlink():
+                    continue
+                name = path.name.lower()
+                if name in secret_names or name.startswith(".env.") or path.suffix.lower() in secret_suffixes:
                     continue
                 if path.is_file():
-                    archive.write(path, path.relative_to(project))
+                    resolved = path.resolve()
+                    if project.resolve() not in resolved.parents:
+                        continue
+                    archive.write(path, relative)
