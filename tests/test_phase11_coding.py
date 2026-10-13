@@ -100,7 +100,7 @@ def test_workspace_timeout_kills_surviving_descendant(tmp_path):
     )
     result = workspace.run_command({
         "project": "tree",
-        "command": [sys.executable, "-c", parent_code],
+        "command": ["python" if os.name == "nt" else "python3", "-c", parent_code],
         "timeout_seconds": 1,
     })
     assert result["status"] == "timed_out"
