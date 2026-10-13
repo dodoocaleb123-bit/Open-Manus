@@ -38,6 +38,7 @@ def test_container_reads_only_selected_project(sandbox_root, tmp_path):
     (sandbox_root / "one" / "marker.txt").write_text("project-data", encoding="utf-8")
     outside = tmp_path / "host-secret.txt"
     outside.write_text("host-secret-value", encoding="utf-8")
+    (sandbox_root / "one" / ".env").write_text("API_KEY=project-secret", encoding="utf-8")
     project = sandbox_root / "one"
     result = server.execute_job({
         "project": "one",
@@ -54,6 +55,20 @@ def test_container_reads_only_selected_project(sandbox_root, tmp_path):
     assert "HOST_SECRET_BLOCKED" in result["stdout"]
     assert "host-secret-value" not in result["stdout"]
 
+
+
+
+def test_generated_job_runs_unprivileged_and_syncs_only_project_output(sandbox_root):
+    result = run_project(
+        sandbox_root, "writes",
+        ["python", "-c",
+         "import os; from pathlib import Path; "
+         "print('UID=' + str(os.getuid())); "
+         "Path('/workspace/generated.txt').write_text('created safely')"],
+    )
+    assert result["status"] == "passed", result["stderr"]
+    assert "UID=65534" in result["stdout"]
+    assert (sandbox_root / "writes" / "generated.txt").read_text(encoding="utf-8") == "created safely"
 
 def test_container_has_no_network(sandbox_root):
     result = run_project(
