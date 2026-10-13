@@ -6,6 +6,10 @@ on:
   push:
     branches: [main, "fix/**", "security/**"]
 
+concurrency:
+  group: sandbox-security-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
