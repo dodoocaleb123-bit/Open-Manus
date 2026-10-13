@@ -1,0 +1,61 @@
+# Secure generated-code execution
+
+## Security decision
+
+Generated project code is untrusted. It must not run in the Open-Manus application process, in the application container, or with the application's operating-system identity. The existing `OPENMANUS_ALLOW_UNSANDBOXED_CODE` switch is a temporary trusted-development escape hatch only; it is not a sandbox and must not be enabled in production.
+
+## Target architecture
+
+```text
+Open-Manus API / orchestrator
+    |
+    | narrow authenticated job protocol (project ID, argv, limits, job ID)
+    v
+Dedicated sandbox runner service / isolated VM
+    |
+    | fixed, server-side policy; no arbitrary runtime options
+    v
+Ephemeral per-job execution environment
+    |-- unprivileged UID
+    |-- read-only base image
+    |-- one isolated writable project mount
+    |-- no application secrets or host/runtime sockets
+    |-- no network by default
+    |-- dropped capabilities + no-new-privileges
+    |-- CPU, memory, PID, disk, wall-clock and output quotas
+    |-- process-tree kill and environment teardown on every exit
+    v
+bounded result: exit code, status, truncated stdout/stderr, duration
+```
+
+The application must not expose a general container-management API or pass user-controlled Docker flags. The sandbox control plane and its runtime credentials must be unavailable inside generated-code jobs. Prefer a dedicated runner VM/daemon with a narrow API over mounting a host Docker socket into the application container. A conventional container is defense in depth, not a guarantee against kernel vulnerabilities; deployments with stronger adversarial requirements should use a VM boundary or a sandboxed runtime such as gVisor where supported.
+
+## Default execution policy
+
+- Fail closed if the runner is absent, unhealthy, unauthorized, or rejects a request.
+- No host-process fallback, even for previews, tests, package scripts, or dependency installation.
+- Network is disabled by default. If package installation is required, use a separate explicit dependency-fetch policy or a controlled proxy; do not silently grant arbitrary egress.
+- Mount only the selected project into the job. Never mount home directories, credential stores, application config, the Docker socket, or unrelated projects.
+- The job receives no application environment variables or credentials.
+- Set explicit, server-enforced ceilings for CPU, memory, PIDs, writable storage, wall-clock time, and captured output.
+- Terminate the entire job environment, including descendants, after completion, timeout, cancellation, or runner disconnect.
+- Previews use the same isolation. Publish only an explicitly selected port through a local-only proxy; do not bind arbitrary user processes to public interfaces.
+- Treat artifacts, logs, archives, and preview output as untrusted. Do not follow symlinks when exporting; exclude internal state and known secret files; cap traversal depth, file count, total bytes, and per-file size.
+
+## Threat model
+
+Protect the host, application credentials, unrelated user projects, runner control plane, and other jobs from malicious or compromised generated code and dependencies. The model includes hostile commands, malicious package install scripts, filesystem traversal, symlink attacks, fork bombs, resource exhaustion, output floods, network probing, background descendants, and attempts to reach local services.
+
+The model does not promise protection against a compromised host kernel/hypervisor, a malicious administrator, or vulnerabilities in the selected isolation runtime. Those risks require patching, hardened host configuration, and—where needed—a stronger VM boundary.
+
+## Implementation and acceptance gates
+
+1. Define a narrow runner protocol and immutable server-side policy. Validate project IDs, argv shape, supported operations, and resource ceilings.
+2. Implement a runner adapter that has no host-execution fallback; runner health and configuration must be checked before enabling execution.
+3. Implement ephemeral job lifecycle, project-only mounts, network policy, non-root identity, read-only root filesystem, capability removal, no-new-privileges, resource quotas, output caps, and guaranteed teardown.
+4. Route command, test, build, dependency, and preview operations through the runner. Keep the legacy direct host executor disabled by default and remove it from untrusted-code paths.
+5. Add unit tests for policy validation and fail-closed behavior; add integration tests in the actual runner for host-file/secret access, symlink traversal, network denial, resource exhaustion, output caps, timeout, descendant cleanup, and teardown after cancellation.
+6. Test on Linux and Windows hosts. Windows may use a dedicated Linux VM/container runtime, but the application must not expose unrestricted runtime control to generated jobs.
+7. Repeat the security review against the actual code and integration evidence before considering this complete.
+
+Green unit tests or CI alone do not establish isolation. The security gate is complete only when the runner is integrated and hostile integration tests demonstrate the required boundary.
