@@ -579,7 +579,17 @@ def start_preview(value: Any) -> dict[str, Any]:
             if state.get("status") == "running":
                 break
             if state.get("status") == "stopped":
-                raise RequestError("preview process exited during startup: " + _preview_logs(sandbox_id))
+                details = subprocess.run(
+                    ["docker", "exec", sandbox_id, "python", "-c",
+                     "import os; print('files=' + repr(os.listdir('/tmp'))); "
+                     "p='/tmp/openmanus-preview.exit'; print('exit=' + (open(p).read() if os.path.exists(p) else 'missing'))"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, timeout=5, check=False, env=_docker_env(),
+                )
+                raise RequestError(
+                    "preview process exited during startup: state=" + repr(state) + "; "
+                    + details.stdout[-500:] + _preview_logs(sandbox_id)
+                )
             time.sleep(0.1)
         if state.get("status") != "running":
             raise RequestError("preview process did not become ready: " + _preview_logs(sandbox_id))
