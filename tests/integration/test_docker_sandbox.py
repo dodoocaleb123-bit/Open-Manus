@@ -73,12 +73,10 @@ def test_container_has_no_network(sandbox_root):
 def test_container_root_filesystem_is_read_only(sandbox_root):
     result = run_project(
         sandbox_root, "readonly",
-        ["python", "-c",
-         "from pathlib import Path; p=Path('/openmanus-security-test'); "
-         "exec(\"try: p.write_text('bad')\\nexcept OSError: print('ROOTFS_READ_ONLY')\")"],
+        ["python", "-c", "open('/openmanus-security-test', 'w').write('bad')"],
     )
-    assert result["status"] == "passed", result["stderr"]
-    assert "ROOTFS_READ_ONLY" in result["stdout"]
+    assert result["status"] == "failed"
+    assert "Read-only file system" in result["stderr"] or "PermissionError" in result["stderr"]
 
 
 def test_output_capture_is_bounded(sandbox_root):
