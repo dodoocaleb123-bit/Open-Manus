@@ -91,3 +91,34 @@ def test_sync_back_copies_regular_changes_but_never_secrets_or_symlinks(tmp_path
     assert (project / "new.py").read_text(encoding="utf-8") == "created"
     assert (project / ".env").read_text(encoding="utf-8") == "API_KEY=keep"
     assert not (project / "escape.py").exists()
+
+
+
+def test_runner_http_api_requires_bearer_token(tmp_path, monkeypatch):
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from sandbox_runner import server
+
+    root = tmp_path / "projects"
+    root.mkdir()
+    monkeypatch.setattr(server, "TOKEN", "unit-test-token")
+    monkeypatch.setattr(server, "PROJECTS_ROOT", root.resolve())
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    url = "http://127.0.0.1:" + str(httpd.server_address[1]) + "/health"
+    try:
+        request = urllib.request.Request(url)
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=2)
+        assert error.value.code == 401
+        authorized = urllib.request.Request(url, headers={"Authorization": "Bearer unit-test-token"})
+        with urllib.request.urlopen(authorized, timeout=2) as response:
+            assert response.status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
