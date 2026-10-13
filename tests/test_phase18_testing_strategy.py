@@ -160,20 +160,15 @@ def test_qwen_citations_and_multi_source_comparison():
 
 # Qwen Coder role tests
 
-def test_qwen_coder_project_edit_test_preview_and_error_repair(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+def test_qwen_coder_workspace_fails_closed_without_runner(tmp_path):
+    workspace = CodingWorkspace(tmp_path / "projects")
     assert workspace.create_project({"project": "app"})["created"]
-    workspace.write_file({"project": "app", "path": "test_app.py", "content": "def test_ok():\n    assert 2 + 2 == 4\n"})
-    assert workspace.run_tests({"project": "app", "command": ["pytest", "-q"]})["status"] == "passed"
-    bad = workspace.run_command({"project": "app", "command": ["python3", "-c", "raise SystemExit(2)"]})
-    assert bad["status"] == "failed"
-    workspace.write_file({"project": "app", "path": "fixed.py", "content": "print('fixed')\n"})
-    assert workspace.run_command({"project": "app", "command": ["python3", "fixed.py"]})["status"] == "passed"
-    preview = workspace.start_preview({"project": "app", "port": 18766})
-    try:
-        assert workspace.preview_status({"preview_id": preview["preview_id"]})["status"] == "running"
-    finally:
-        workspace.stop_preview({"preview_id": preview["preview_id"]})
+    workspace.write_file({"project": "app", "path": "test_app.py", "content": "def test_ok():\\n    assert 2 + 2 == 4\\n"})
+    with pytest.raises(Exception, match="Host execution fallback is disabled"):
+        workspace.run_tests({"project": "app", "command": ["pytest", "-q"]})
+    workspace.write_file({"project": "app", "path": "fixed.py", "content": "print('fixed')\\n"})
+    with pytest.raises(Exception, match="Secure previews are unavailable"):
+        workspace.start_preview({"project": "app", "port": 18766})
 
 
 def test_qwen_coder_github_push_requires_and_records_approval(tmp_path):
@@ -262,22 +257,20 @@ def test_e2e_internet_research_and_research_to_website_generation(tmp_path):
             return {"url": arguments["url"], "title": "Shop", "text": "hero catalog checkout", "dynamic_hint": False}
 
     research = FakeResearch().collect_sources({"objective": "Research cosmetic layouts", "queries": ["cosmetic"], "max_sources": 1})
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+    workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "cosmetic"})
     workspace.write_file({"project": "cosmetic", "path": "index.html", "content": "<main>hero catalog checkout</main>"})
     assert research["citations"] and workspace.read_file({"project": "cosmetic", "path": "index.html"})["content"].startswith("<main>")
 
 
-def test_e2e_visual_preview_analysis(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+def test_e2e_visual_preview_analysis_fails_closed_without_proxy(tmp_path):
+    from coding import CodingWorkspaceError
+
+    workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "preview"})
     workspace.write_file({"project": "preview", "path": "index.html", "content": "<h1>Preview</h1>"})
-    preview = workspace.start_preview({"project": "preview", "port": 18767, "viewport": "mobile"})
-    try:
-        status = workspace.preview_status({"preview_id": preview["preview_id"]})
-        assert status["viewport"] == "mobile" and status["url"].startswith("http://")
-    finally:
-        workspace.stop_preview({"preview_id": preview["preview_id"]})
+    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+        workspace.start_preview({"project": "preview", "port": 18767, "viewport": "mobile"})
 
 
 def test_e2e_user_cancellation_and_missing_model_handling(tmp_path):
@@ -298,7 +291,7 @@ def test_e2e_secret_protected_operation(tmp_path):
     secrets = SecretStore(tmp_path / "secrets.sqlite3", "master-key")
     ref = secrets.put("local", "GitHub token", "do-not-log")
     assert ref["value_exposed"] is False and "do-not-log" not in str(secrets.describe("local"))
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+    workspace = CodingWorkspace(tmp_path / "projects")
     secure = SecureActions(workspace)
     result = secure.use_secret({"secret_ref": ref["secret_ref"]})
     assert result["value_exposed"] is False and result["secret_ref"] == ref["secret_ref"]
