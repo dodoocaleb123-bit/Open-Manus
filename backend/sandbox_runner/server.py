@@ -778,6 +778,18 @@ def _cleanup_stale_jobs() -> None:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             timeout=30, check=True, env=_docker_env(),
         )
+    networks = subprocess.run(
+        ["docker", "network", "ls", "-q", "--filter", "label=openmanus.sandbox=true"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=10, check=True, env=_docker_env(),
+    )
+    network_ids = [item.strip() for item in networks.stdout.splitlines() if item.strip()]
+    if network_ids:
+        subprocess.run(
+            ["docker", "network", "rm", *network_ids], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=30, check=True, env=_docker_env(),
+        )
     # A runner crash can leave sanitized staging copies in the shared volume.
     # They are never used by active jobs after this single-instance service
     # starts, so remove only the reserved staging prefix.
