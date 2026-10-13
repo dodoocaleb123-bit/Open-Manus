@@ -187,3 +187,35 @@ def test_output_archive_rejects_traversal_and_never_materializes_symlinks(tmp_pa
     assert (destination / "app" / "generated.py").read_text(encoding="utf-8") == "print('safe')"
     assert not outside.exists()
     assert not (destination / "app" / "escape-link").exists()
+
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="requires POSIX no-follow open semantics")
+def test_staging_symlink_swap_cannot_read_or_chmod_host_target(tmp_path, monkeypatch):
+    from sandbox_runner import server
+
+    project = tmp_path / "project"
+    project.mkdir()
+    victim = project / "victim.txt"
+    victim.write_text("ordinary project data", encoding="utf-8")
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("host secret", encoding="utf-8")
+    secret.chmod(0o600)
+    staged = tmp_path / "staged"
+    real_open = os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == victim and not swapped:
+            swapped = True
+            victim.unlink()
+            victim.symlink_to(secret)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(server.os, "open", swap_before_open)
+    server._copy_workspace(project, staged)
+    assert swapped
+    assert not (staged / "victim.txt").exists()
+    assert secret.read_text(encoding="utf-8") == "host secret"
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
