@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from coding import CodingWorkspace, CodingWorkspaceError
+from coding.runner_client import SandboxUnavailable
 from api import OpenManusAPI
 from execution import ControlledExecutor, SQLiteStateStore
 from model_adapters import ModelRole
@@ -22,6 +23,12 @@ class FakeSandboxRunner:
             "duration_seconds": 1.0,
             "status": "timed_out" if timed_out else "passed",
         }
+
+    def start_preview(self, _payload):
+        raise SandboxUnavailable(
+            "Isolated previews are unavailable: configure the sandbox runner. "
+            "Host preview fallback is disabled."
+        )
 
 
 class Registry:
