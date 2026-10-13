@@ -518,8 +518,10 @@ def start_preview(value: Any) -> dict[str, Any]:
     sandbox_id = "om-prev-" + preview_id
     proxy_id = "om-proxy-" + preview_id
     network_id = "om-net-" + preview_id
+    proxy_network_id = "om-pnet-" + preview_id
     staged = stage_root / "workspace"
     network_created = False
+    proxy_network_created = False
     sandbox_created = False
     proxy_created = False
     try:
@@ -595,15 +597,21 @@ def start_preview(value: Any) -> dict[str, Any]:
         if state.get("status") != "running":
             raise RequestError("preview process did not become ready: " + _preview_logs(sandbox_id))
 
-        # Docker Engine/CLI combinations do not consistently retain an
-        # ephemeral host-port request (127.0.0.1::8080) for "docker create".
-        # Select a free loopback port and publish only on host loopback.
+        # Docker does not publish ports on an internal-only network. Keep the
+        # generated server on its isolated network and put only the fixed-target
+        # proxy on a separate bridge network; its listener is loopback-published.
+        subprocess.run(
+            ["docker", "network", "create", "--label", "openmanus.sandbox=true", proxy_network_id],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=20, check=True, env=_docker_env(),
+        )
+        proxy_network_created = True
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_socket:
             port_socket.bind(("127.0.0.1", 0))
             requested_host_port = port_socket.getsockname()[1]
         subprocess.run(
             ["docker", "create", "--name", proxy_id, "--label", "openmanus.sandbox=true",
-             "--network", network_id, "--publish", f"127.0.0.1:{requested_host_port}:8080/tcp",
+             "--network", proxy_network_id, "--publish", f"127.0.0.1:{requested_host_port}:8080/tcp",
              "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
              "--pids-limit", "32", "--memory", "128m", "--memory-swap", "128m",
              "--cpus", "0.25", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m",
@@ -612,6 +620,11 @@ def start_preview(value: Any) -> dict[str, Any]:
             text=True, timeout=30, check=True, env=_docker_env(),
         )
         proxy_created = True
+        subprocess.run(
+            ["docker", "network", "connect", network_id, proxy_id],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=15, check=True, env=_docker_env(),
+        )
         subprocess.run(["docker", "start", proxy_id], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        timeout=20, check=True, env=_docker_env())
@@ -659,6 +672,7 @@ def start_preview(value: Any) -> dict[str, Any]:
             "url": "http://" + host + ":" + str(host_port),
             "screenshot_url": "http://" + screenshot_host + ":" + str(host_port),
             "sandbox_id": sandbox_id, "proxy_id": proxy_id, "network_id": network_id,
+            "proxy_network_id": proxy_network_id,
         }
         with PREVIEW_LOCK:
             PREVIEWS[preview_id] = record
@@ -669,6 +683,9 @@ def start_preview(value: Any) -> dict[str, Any]:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
         if sandbox_created:
             subprocess.run(["docker", "rm", "--force", sandbox_id], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
+        if proxy_network_created:
+            subprocess.run(["docker", "network", "rm", proxy_network_id], stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
         if network_created:
             subprocess.run(["docker", "network", "rm", network_id], stdin=subprocess.DEVNULL,
@@ -721,13 +738,14 @@ def stop_preview(preview_id: str) -> dict[str, Any]:
         )
         if result.returncode and "No such container" not in result.stderr:
             errors.append(result.stderr[-500:])
-    result = subprocess.run(
-        ["docker", "network", "rm", record["network_id"]], stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        timeout=15, check=False, env=_docker_env(),
-    )
-    if result.returncode and "not found" not in result.stderr.lower():
-        errors.append(result.stderr[-500:])
+    for network in (record["proxy_network_id"], record["network_id"]):
+        result = subprocess.run(
+            ["docker", "network", "rm", network], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=15, check=False, env=_docker_env(),
+        )
+        if result.returncode and "not found" not in result.stderr.lower():
+            errors.append(result.stderr[-500:])
     if errors:
         raise RuntimeError("preview cleanup incomplete: " + "; ".join(errors))
     return {"preview_id": preview_id, "status": "stopped"}
