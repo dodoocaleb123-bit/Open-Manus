@@ -155,3 +155,56 @@ def test_workspace_rejects_symlinked_project_root(tmp_path):
         pytest.skip("symlink creation is unavailable on this host")
     with pytest.raises(CodingWorkspaceError, match="cannot be a symlink"):
         workspace.file_tree({"project": "alias"})
+
+
+
+def test_workspace_starts_preview_only_through_isolated_runner(tmp_path):
+    class PreviewRunner(FakeSandboxRunner):
+        def start_preview(self, payload):
+            return {
+                "preview_id": "preview-123",
+                "project": payload["project"],
+                "status": "running",
+                "port": payload["port"],
+                "url": "http://127.0.0.1:18765/",
+            }
+
+    workspace = CodingWorkspace(tmp_path / "projects", runner=PreviewRunner())
+    workspace.create_project({"project": "webapp"})
+    workspace.write_file({"project": "webapp", "path": "index.html", "content": "<h1>ready</h1>"})
+    result = workspace.start_preview({
+        "project": "webapp",
+        "command": ["python", "-m", "http.server", "8000"],
+        "port": 18765,
+    })
+    assert result["status"] == "running"
+    assert result["preview_id"] == "preview-123"
+
+
+@pytest.mark.parametrize("arguments", [
+    {"project": "webapp", "command": ["bash", "-c", "unsafe"], "port": 18765},
+    {"project": "webapp", "command": ["npm", "exec", "unsafe"], "port": 18765},
+    {"project": "webapp", "command": ["python", "-m", "http.server"], "port": 80},
+    {"project": "webapp", "command": ["python", "-m", "http.server"], "port": True},
+    {"project": "webapp", "port": 18765},
+])
+def test_preview_rejects_invalid_commands_and_ports(tmp_path, arguments):
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
+    workspace.create_project({"project": "webapp"})
+    with pytest.raises(CodingWorkspaceError):
+        workspace.start_preview(arguments)
+
+
+def test_preview_startup_rejects_incomplete_runner_result(tmp_path):
+    class IncompletePreviewRunner(FakeSandboxRunner):
+        def start_preview(self, payload):
+            return {"project": payload["project"], "status": "starting"}
+
+    workspace = CodingWorkspace(tmp_path / "projects", runner=IncompletePreviewRunner())
+    workspace.create_project({"project": "webapp"})
+    with pytest.raises(CodingWorkspaceError, match="incomplete preview"):
+        workspace.start_preview({
+            "project": "webapp",
+            "command": ["python", "-m", "http.server", "8000"],
+            "port": 18765,
+        })
