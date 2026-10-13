@@ -42,7 +42,7 @@ def test_workspace_execution_fails_closed_without_runner(tmp_path, monkeypatch):
     workspace.create_project({"project": "demo"})
     with pytest.raises(CodingWorkspaceError, match="Host execution fallback is disabled"):
         workspace.run_command({"project": "demo", "command": ["python", "-c", "print('should not run')"]})
-    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+    with pytest.raises(CodingWorkspaceError, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "demo", "port": 18768})
 
 
@@ -94,7 +94,7 @@ def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
 def test_preview_fails_closed_until_isolated_preview_proxy_exists(tmp_path):
     workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     workspace.create_project({"project": "demo"})
-    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+    with pytest.raises(CodingWorkspaceError, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "demo", "port": 18765})
 
 
@@ -129,7 +129,7 @@ def test_created_web_app_preview_fails_closed_without_proxy(tmp_path):
         "path": "index.html",
         "content": "<!doctype html><title>Todo</title><h1>My tasks</h1>",
     })
-    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+    with pytest.raises(CodingWorkspaceError, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "todo", "port": 18767})
 
 
