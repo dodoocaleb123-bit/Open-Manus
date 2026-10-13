@@ -299,7 +299,7 @@ def execute_job(value: Any) -> dict[str, Any]:
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                        timeout=30, check=True, env=_docker_env())
         staged_archive = _archive_staged(staged)
-        subprocess.run(["docker", "exec", "-i", job_id, "tar", "-x", "-C", "/workspace"],
+        subprocess.run(["docker", "exec", "-i", job_id, "tar", "-x", "-f", "-", "-C", "/workspace"],
                        input=staged_archive, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=30, check=True, env=_docker_env())
         attached = subprocess.Popen(
@@ -354,7 +354,7 @@ def execute_job(value: Any) -> dict[str, Any]:
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, text=True, timeout=10, check=True, env=_docker_env())
             exported = subprocess.run(
-                ["docker", "exec", job_id, "tar", "-c", "-C", "/workspace", "."],
+                ["docker", "exec", job_id, "tar", "-c", "-f", "-", "-C", "/workspace", "."],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=30, check=True, env=_docker_env(),
             )
