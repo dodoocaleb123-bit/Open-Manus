@@ -69,7 +69,7 @@ def test_generated_job_runs_unprivileged_and_syncs_only_project_output(sandbox_r
     )
     assert result["status"] == "passed", result["stderr"]
     assert "UID=65534" in result["stdout"]
-    assert "CapEff:\\t0000000000000000" in result["stdout"]
+    assert "CapEff:\t0000000000000000" in result["stdout"]
     assert (sandbox_root / "writes" / "generated.txt").read_text(encoding="utf-8") == "created safely"
 
 
