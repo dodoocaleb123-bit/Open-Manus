@@ -37,10 +37,13 @@ EXECUTABLES = {"python", "python3", "pytest", "node", "npm", "npx"}
 NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check", "install"}
 PYTHON_FLAGS = {"-m", "-c", "-B", "-I", "-u", "-q", "-v"}
 SENSITIVE_NAMES = {
-    ".env", ".env.local", ".env.production", ".env.development",
-    "id_rsa", "id_ed25519", "credentials.json", "secrets.json",
+    ".env", ".npmrc", ".pypirc", ".netrc", ".git-credentials",
+    ".env.local", ".env.production", ".env.development",
+    "id_rsa", "id_ed25519", "credentials", "credentials.json",
+    "secrets.json", "auth.json", "service-account.json",
 }
-SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
+SENSITIVE_DIRECTORIES = {".ssh", ".aws", ".azure", ".gnupg"}
+SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"}
 
 
 class RequestError(ValueError):
@@ -50,7 +53,7 @@ class RequestError(ValueError):
 def _sensitive(relative: Path) -> bool:
     for part in relative.parts:
         lower = part.lower()
-        if lower in {".git", ".openmanus"} or lower in SENSITIVE_NAMES:
+        if lower in {".git", ".openmanus"} or lower in SENSITIVE_NAMES or lower in SENSITIVE_DIRECTORIES:
             return True
         if lower.startswith(".env.") or Path(lower).suffix in SENSITIVE_SUFFIXES:
             return True
