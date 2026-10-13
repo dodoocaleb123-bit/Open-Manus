@@ -97,3 +97,43 @@ The repository's `pyproject.toml` declares Python `>=3.12`, pytest/pytest-asynci
 - [ ] Validate actual .pptx/.pdf/image artifacts and each named integration.
 
 The unchecked items are explicit remaining audit work, not assumed passes.
+
+
+## Runtime-level inspection addendum (2026-10-13)
+
+Additional direct source files inspected:
+- `backend/model_adapters/types.py`
+- `backend/model_adapters/controller.py`
+- `backend/model_adapters/platform_knowledge.py`
+- `scripts/check_environment.py`
+- `.env.example`
+- `pyproject.toml`
+- `docs/PHASE_9.md` through `docs/PHASE_18.md` (targeted phase guides).
+
+### Source-level findings
+
+1. **Controller boundary has a useful guard.** `DeepSeekController` rejects a non-controller adapter and rejects caller-supplied system messages before adding the platform system prompt. This is a concrete source-level invariant; it does not by itself prove all production request paths use this facade.
+2. **The environment checker is not a model readiness check.** `scripts/check_environment.py` checks required paths and whether an Ollama-compatible `/api/tags` endpoint is reachable, but it does not parse the returned tags to verify that all five configured models are installed. It also prints model names from environment variables without loading `.env` itself. A reachable endpoint can therefore still conceal missing model tags.
+3. **Model tag is a real consistency risk, not yet a proven runtime failure.** `.env.example` defaults creative to `llama3.2:3b`; the previously reported laptop tag was `llama3.2:latest`. These may resolve to compatible weights, but tag equivalence must be checked against `/api/tags`; don't silently change the user's config. Controller `deepseek-r1:7b` is explicitly allowed by the example, while the ZIP's target configuration names `deepseek-r1:1b`.
+4. **Actual image generation is intentionally external.** `creative_generate_image` needs `OPENMANUS_IMAGE_BASE_URL`, API key and model. The app should report this dependency instead of presenting an image prompt as an image.
+5. **Automation is durable scheduling, not autonomous always-on execution by itself.** `docs/PHASE_16.md` says schedules create normal DeepSeek tasks and a local service runner/OS timer must call `/api/schedules/run-due`. Connector-neutral interfaces and enabled flags do not establish live email/calendar/Slack/Notion connections.
+6. **Browser and presentation outputs have explicit limits.** Research dynamic-page inspection depends on Playwright and otherwise falls back to static extraction; screenshot capture also requires Playwright/browser. The inspected docs describe presentation structures and typed artifacts but do not establish a verified, valid `.pptx`/PDF exporter.
+7. **Security docs distinguish an execution gate from a sandbox.** `docs/PHASE_17.md` explicitly states unsandboxed execution, when opted in, retains the Open-Manus process's OS permissions. The newer separate Docker runner has Linux CI coverage, but Windows laptop deployment remains a separate acceptance gate.
+8. **The dependency manifest is intentionally light.** `pyproject.toml` sets Python `>=3.12`, with pytest/pytest-asyncio/Ruff in dev extras and `cryptography` as a base dependency. Runtime dependencies also live in `backend/openmanus-core/requirements.txt`; installing only the root project's base dependencies should not be treated as a complete deployment.
+
+### CI rerun on the audit PR
+
+The audit PR commit `95207743ad03c5c5a5c6a10a57489f7538009465` triggered [workflow run 38333950834](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38333950834). The following jobs all completed successfully:
+- `pytest (ubuntu-latest)`
+- `pytest (windows-latest)`
+- `Docker sandbox integration (Linux)`
+
+This confirms the repository's CI checks pass on the audit branch. The connector returns job/step conclusions but not the test runner's printed summary, so **exact test counts remain unavailable** from this evidence. No claim is made that live Ollama, the image service, browser E2E, generated PowerPoint/PDF, or target laptop was tested.
+
+### Runtime-level priority adjustment
+
+- **P0:** Enhance the environment check to compare configured role tags with actual `/api/tags`, redact sensitive config, and produce a machine-readable readiness result.
+- **P0:** Run the current project test suite on the user's actual Windows checkout and execute the separate runner/preview smoke test without deleting or recreating `openmanus-data`.
+- **P1:** Add opt-in five-role Ollama smoke tests and a cross-role acceptance flow; keep standard CI deterministic/offline.
+- **P1:** Prove actual GUI task-state/API wiring, valid generated artifacts, and provider availability before broad feature work.
+- **P2:** Add measurements for first-token latency, task duration, memory/disk and cancellation/restart recovery on the target 16 GB laptop.
