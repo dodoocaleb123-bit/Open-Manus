@@ -46,6 +46,7 @@ def test_staging_excludes_secrets_repository_state_and_symlinks(tmp_path):
     project.mkdir()
     (project / "app.py").write_text("print('ok')", encoding="utf-8")
     (project / ".env").write_text("API_KEY=secret", encoding="utf-8")
+    (project / ".npmrc").write_text("//registry.example/:_authToken=secret", encoding="utf-8")
     (project / "private.pem").write_text("private-key", encoding="utf-8")
     (project / ".git").mkdir()
     (project / ".git" / "config").write_text("credential=secret", encoding="utf-8")
@@ -60,6 +61,7 @@ def test_staging_excludes_secrets_repository_state_and_symlinks(tmp_path):
     manifest = _copy_workspace(project, staged)
     assert "app.py" in manifest
     assert not (staged / ".env").exists()
+    assert not (staged / ".npmrc").exists()
     assert not (staged / "private.pem").exists()
     assert not (staged / ".git").exists()
     assert not (staged / "escape.txt").exists()
