@@ -29,7 +29,7 @@ def test_preview_execution_fails_closed_without_isolated_proxy(tmp_path):
     workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "demo"})
     workspace.write_file({"project": "demo", "path": "index.html", "content": "<h1>Hello preview</h1>"})
-    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+    with pytest.raises(CodingWorkspaceError, match="Isolated previews are unavailable"):
         workspace.start_preview({"project": "demo", "port": 18766, "viewport": "mobile"})
 
 
