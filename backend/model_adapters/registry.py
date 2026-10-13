@@ -23,7 +23,7 @@ _EXPECTED_PREFIX = {
     ModelRole.RESEARCH: ("qwen2.5:3b",),
     ModelRole.CODER: ("qwen2.5-coder:7b",),
     ModelRole.VISION: ("gemma3:4b",),
-    ModelRole.CREATIVE: ("llama3.2:3b",),
+    ModelRole.CREATIVE: ("llama3.2:3b", "llama3.2:latest"),
 }
 
 
@@ -39,6 +39,12 @@ class ModelRegistry:
         max_tokens = int(env.get("LLM_MAX_TOKENS", "4096"))
         temperature = float(env.get("LLM_TEMPERATURE", "1.0"))
         timeout = float(env.get("LLM_REQUEST_TIMEOUT", "300"))
+        if max_tokens < 1:
+            raise ModelConfigurationError("LLM_MAX_TOKENS must be a positive integer")
+        if timeout <= 0:
+            raise ModelConfigurationError("LLM_REQUEST_TIMEOUT must be greater than zero")
+        if not 0 <= temperature <= 2:
+            raise ModelConfigurationError("LLM_TEMPERATURE must be between 0 and 2")
         adapters: dict[ModelRole, ModelAdapter] = {}
         for role, (model_var, url_var, key_var) in _ROLE_ENV.items():
             model = env.get(model_var, _default_model(role))
@@ -63,6 +69,18 @@ class ModelRegistry:
 
     def roles(self) -> tuple[ModelRole, ...]:
         return tuple(self.adapters.keys())
+
+    def diagnostics(self) -> tuple[dict[str, str], ...]:
+        """Return safe config diagnostics without exposing endpoint keys or secrets."""
+        return tuple(
+            {
+                "role": role.value,
+                "model": adapter.model,
+                "configured": "true",
+                "endpoint": getattr(getattr(adapter, "config", None), "base_url", "unknown"),
+            }
+            for role, adapter in self.adapters.items()
+        )
 
 
 def _default_model(role: ModelRole) -> str:
