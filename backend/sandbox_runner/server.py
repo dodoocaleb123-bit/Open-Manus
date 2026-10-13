@@ -671,6 +671,7 @@ def start_preview(value: Any) -> dict[str, Any]:
             "port": host_port, "container_port": port,
             "url": "http://" + host + ":" + str(host_port),
             "screenshot_url": "http://" + screenshot_host + ":" + str(host_port),
+            "created_at": time.time(),
             "sandbox_id": sandbox_id, "proxy_id": proxy_id, "network_id": network_id,
             "proxy_network_id": proxy_network_id,
         }
@@ -869,12 +870,32 @@ def _cleanup_stale_jobs() -> None:
             shutil.rmtree(stale, ignore_errors=True)
 
 
+def _preview_reaper() -> None:
+    # Preview processes are intentionally long-lived, but never unbounded.
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with PREVIEW_LOCK:
+            expired = [
+                preview_id for preview_id, record in PREVIEWS.items()
+                if now - float(record.get("created_at", now)) >= 4 * 60 * 60
+            ]
+        for preview_id in expired:
+            try:
+                stop_preview(preview_id)
+            except Exception:
+                # Startup cleanup removes any container/network that could not
+                # be reclaimed here if the service is restarted.
+                continue
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("OPENMANUS_SANDBOX_TOKEN is required")
     if not PROJECTS_ROOT.is_dir():
         raise SystemExit("OPENMANUS_SANDBOX_PROJECTS_ROOT must be an existing directory")
     _cleanup_stale_jobs()
+    threading.Thread(target=_preview_reaper, name="preview-reaper", daemon=True).start()
     host = os.environ.get("OPENMANUS_SANDBOX_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENMANUS_SANDBOX_PORT", "8765"))
     ThreadingHTTPServer((host, port), Handler).serve_forever()
