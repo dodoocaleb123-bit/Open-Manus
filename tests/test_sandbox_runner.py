@@ -154,3 +154,36 @@ def test_runner_client_waits_longer_than_job_deadline(monkeypatch):
     runner = SandboxRunnerClient("http://127.0.0.1:8765", "token", request_timeout=10)
     runner.run({"project": "demo", "command": ["python", "-c", "pass"], "timeout_seconds": 90})
     assert seen["timeout"] == 135
+
+
+
+def test_output_archive_rejects_traversal_and_never_materializes_symlinks(tmp_path):
+    import io
+    import tarfile
+
+    from sandbox_runner.server import _extract_workspace_archive
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    outside = tmp_path / "escaped.txt"
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w") as archive:
+        good = tarfile.TarInfo("app/generated.py")
+        good_data = b"print('safe')"
+        good.size = len(good_data)
+        archive.addfile(good, io.BytesIO(good_data))
+
+        traversal = tarfile.TarInfo("../escaped.txt")
+        traversal_data = b"outside"
+        traversal.size = len(traversal_data)
+        archive.addfile(traversal, io.BytesIO(traversal_data))
+
+        link = tarfile.TarInfo("app/escape-link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = str(outside)
+        archive.addfile(link)
+
+    _extract_workspace_archive(payload.getvalue(), destination)
+    assert (destination / "app" / "generated.py").read_text(encoding="utf-8") == "print('safe')"
+    assert not outside.exists()
+    assert not (destination / "app" / "escape-link").exists()
