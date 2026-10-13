@@ -44,7 +44,7 @@ The local API exposes the project tree through:
 GET /api/workspace?project=<project-name>
 ```
 
-The existing GUI workspace panel can use this endpoint for its Code, Files, Logs, Preview, and Settings surfaces.
+The existing GUI workspace panel can use this endpoint for its Code, Files, Logs, Preview, and Settings surfaces. Preview startup now forwards an explicit, allowlisted command and validated port to the authenticated isolated runner. The runner creates a separate workload container and local-only proxy; the workspace never starts generated servers directly on the host. Status, logs, and stop operations use the runner-managed preview ID.
 
 ## Safety boundary and execution policy
 
@@ -54,10 +54,11 @@ The existing GUI workspace panel can use this endpoint for its Code, Files, Logs
 - Commands begin with an executable allowlist and selected package-manager subcommands
 - Commands run without a shell and have a bounded wall-clock timeout
 - POSIX commands are placed in a new session/process group; Windows cleanup uses `taskkill /T /F`
-- Preview processes receive IDs and can be queried or stopped
+- Preview startup requires an explicit allowlisted command and port and is performed only by the isolated runner
+- Preview processes receive IDs and can be queried, inspected through bounded logs, or stopped
 - Snapshots and exports are ZIP archives; `.git` content is excluded
 
-**Important:** an executable allowlist, restricted environment, timeout, and process-group cleanup do not form an OS-enforced sandbox. A permitted Python/Node/package-manager command can execute project-controlled code with the OpenManus process's operating-system permissions. Therefore, command execution and preview startup fail closed by default until a real isolated runner is configured.
+**Important:** an executable allowlist, restricted environment, timeout, and process-group cleanup do not form an OS-enforced sandbox. A permitted Python/Node/package-manager command can execute project-controlled code with the OpenManus process's operating-system permissions. Therefore, command execution and preview startup fail closed by default unless a real isolated runner is configured. The workspace adapter validates preview inputs and runner response shape; actual browser interaction, viewport coverage, and cleanup behavior still require Docker-backed integration testing on the target deployment.
 
 For temporary trusted local development only, set `OPENMANUS_ALLOW_UNSANDBOXED_CODE=true` or explicitly construct `CodingWorkspace(..., allow_unsafe_execution=True)`. Do not enable this for untrusted generated code or multi-user deployments. Process-tree cleanup is best-effort and must not be treated as a security boundary. A dedicated isolated runner with least privilege, bounded resources/output, controlled mounts, and explicit network policy remains required before executing untrusted code.
 
