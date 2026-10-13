@@ -50,7 +50,7 @@ The model does not promise protection against a compromised host kernel/hypervis
 
 ## Current implementation status (2026-10-13)
 
-- Added an authenticated runner client and a separate HTTP control-plane prototype under `backend/sandbox_runner/`.
+- Added an authenticated runner client, a separate Docker control-plane image, and a private-network deployment example under `backend/sandbox_runner/` and `docker-compose.sandbox.yml`. Only the trusted runner service receives the Docker socket; the application and generated-code containers do not.
 - The coding workspace routes command/test/build/dependency commands through that client; if the runner is not configured or fails, it raises an error and does not execute locally.
 - The current runner protocol supports bounded one-shot jobs only. Secure previews are intentionally disabled until a runner-managed preview lifecycle and local-only port proxy are implemented.
 - The runner image and protocol tests have been added, but this branch has not yet demonstrated a live Docker integration run. Do not describe the security requirement as complete until the acceptance gates below pass on a real runner.
