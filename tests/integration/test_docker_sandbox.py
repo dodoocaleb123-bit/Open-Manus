@@ -142,6 +142,46 @@ def test_descendants_are_killed_before_workspace_sync(sandbox_root):
 
 
 
+
+
+def test_resource_limits_are_visible_inside_sandbox(sandbox_root):
+    code = (
+        "from pathlib import Path; "
+        "print('CPU_MAX=' + Path('/sys/fs/cgroup/cpu.max').read_text().strip()); "
+        "print('MEMORY_MAX=' + Path('/sys/fs/cgroup/memory.max').read_text().strip()); "
+        "print('PIDS_MAX=' + Path('/sys/fs/cgroup/pids.max').read_text().strip())"
+    )
+    result = run_project(sandbox_root, "cgroup-limits", ["python", "-c", code])
+    assert result["status"] == "passed"
+    assert "CPU_MAX=100000 100000" in result["stdout"]
+    assert "MEMORY_MAX=536870912" in result["stdout"]
+    assert "PIDS_MAX=128" in result["stdout"]
+
+
+def test_memory_limit_prevents_large_allocation(sandbox_root):
+    result = run_project(
+        sandbox_root, "memory-limit",
+        ["python", "-c", "bytearray(700 * 1024 * 1024); print('ALLOCATED')"],
+        timeout=10,
+    )
+    assert result["status"] != "passed"
+    assert "ALLOCATED" not in result["stdout"]
+
+
+def test_pid_limit_stops_process_fanout(sandbox_root):
+    code = (
+        "import subprocess; p=[]; "
+        "forbidden=False\n"
+        "for _ in range(200):\n"
+        " try: p.append(subprocess.Popen(['/bin/sleep','30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))\n"
+        " except OSError: forbidden=True; print('PID_LIMIT_REACHED', len(p)); break\n"
+        "print('SPAWNED', len(p))"
+    )
+    result = run_project(sandbox_root, "pid-limit", ["python", "-c", code], timeout=10)
+    assert result["status"] == "passed"
+    assert "PID_LIMIT_REACHED" in result["stdout"]
+    assert "SPAWNED 200" not in result["stdout"]
+
 def test_isolated_preview_uses_loopback_proxy_and_cleans_up(sandbox_root):
     import urllib.error
     import urllib.request
