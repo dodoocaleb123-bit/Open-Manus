@@ -1,22 +1,24 @@
-"""Minimal trusted control plane for ephemeral Docker sandbox jobs.
+"""Trusted control plane for ephemeral, no-network Docker code jobs.
 
-Run this service separately from the Open-Manus API. It requires access to the
-Docker daemon and must be reachable only on a private interface/network. Never
-mount the Docker socket into generated-code containers or expose this service
-to untrusted networks.
+The workload receives only a bounded tmpfs workspace populated from a sanitized
+copy. It never receives a host bind mount, Docker socket, application secrets,
+or runner credentials.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 TOKEN = os.environ.get("OPENMANUS_SANDBOX_TOKEN", "")
@@ -25,16 +27,34 @@ IMAGE = os.environ.get("OPENMANUS_SANDBOX_IMAGE", "openmanus-code-runner:latest"
 MAX_BODY = 64 * 1024
 MAX_OUTPUT = 50_000
 MAX_TIMEOUT = 120
+MAX_PROJECT_FILES = 5000
+MAX_PROJECT_BYTES = 100 * 1024 * 1024
+MAX_WORKSPACE_BYTES = 256 * 1024 * 1024
 MAX_CONCURRENT_JOBS = 4
 JOB_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-EXECUTABLES = {"python": "python", "python3": "python", "pytest": "pytest", "node": "node", "npm": "npm", "npx": "npx"}
-NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check"}
+EXECUTABLES = {"python", "python3", "pytest", "node", "npm", "npx"}
+NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check", "install"}
 PYTHON_FLAGS = {"-m", "-c", "-B", "-I", "-u", "-q", "-v"}
+SENSITIVE_NAMES = {
+    ".env", ".env.local", ".env.production", ".env.development",
+    "id_rsa", "id_ed25519", "credentials.json", "secrets.json",
+}
+SENSITIVE_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
 
 
 class RequestError(ValueError):
     """Invalid job request."""
+
+
+def _sensitive(relative: Path) -> bool:
+    for part in relative.parts:
+        lower = part.lower()
+        if lower in {".git", ".openmanus"} or lower in SENSITIVE_NAMES:
+            return True
+        if lower.startswith(".env.") or Path(lower).suffix in SENSITIVE_SUFFIXES:
+            return True
+    return False
 
 
 def validate_job(value: Any) -> tuple[str, list[str], int]:
@@ -61,6 +81,106 @@ def validate_job(value: Any) -> tuple[str, list[str], int]:
     return project, command, timeout
 
 
+def _copy_workspace(source: Path, destination: Path) -> dict[str, str]:
+    """Copy only bounded regular project files; never follow symlinks or copy secrets."""
+    destination.mkdir(parents=True, exist_ok=False)
+    manifest: dict[str, str] = {}
+    total_bytes = 0
+    file_count = 0
+    for current, directories, files in os.walk(source, topdown=True, followlinks=False):
+        current_path = Path(current)
+        relative_dir = current_path.relative_to(source)
+        directories[:] = [
+            name for name in directories
+            if not _sensitive(relative_dir / name) and not (current_path / name).is_symlink()
+        ]
+        out_dir = destination / relative_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            src = current_path / name
+            relative = relative_dir / name
+            if _sensitive(relative) or src.is_symlink():
+                continue
+            try:
+                info = src.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not src.is_file() or info.st_size > MAX_PROJECT_BYTES:
+                continue
+            file_count += 1
+            total_bytes += info.st_size
+            if file_count > MAX_PROJECT_FILES or total_bytes > MAX_PROJECT_BYTES:
+                raise RequestError("project exceeds the runner's file-count or source-size limit")
+            target = out_dir / name
+            shutil.copyfile(src, target, follow_symlinks=False)
+            target.chmod(0o666)
+            manifest[relative.as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest()
+    for current, directories, _ in os.walk(destination, topdown=False):
+        Path(current).chmod(0o777 if Path(current) == destination else 0o777)
+    return manifest
+
+
+def _safe_sync_back(source: Path, destination: Path, baseline: dict[str, str]) -> None:
+    """Copy changed regular files back without following sandbox-created symlinks."""
+    count = 0
+    total_bytes = 0
+    for current, directories, files in os.walk(source, topdown=True, followlinks=False):
+        current_path = Path(current)
+        relative_dir = current_path.relative_to(source)
+        directories[:] = [
+            name for name in directories
+            if not (current_path / name).is_symlink()
+            and not _sensitive(relative_dir / name)
+        ]
+        for name in files:
+            src = current_path / name
+            relative = relative_dir / name
+            if src.is_symlink() or _sensitive(relative):
+                continue
+            try:
+                info = src.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not src.is_file():
+                continue
+            count += 1
+            total_bytes += info.st_size
+            if count > MAX_PROJECT_FILES or total_bytes > MAX_WORKSPACE_BYTES:
+                raise RequestError("job output exceeds the runner's file-count or output-size limit")
+            digest = hashlib.sha256(src.read_bytes()).hexdigest()
+            if baseline.get(relative.as_posix()) == digest:
+                continue
+            target = destination / relative
+            if not target.resolve(strict=False).is_relative_to(destination.resolve()):
+                continue
+            # Refuse symlinked parents in the host project. os.replace replaces
+            # a symlink leaf rather than following it.
+            parent = target.parent
+            chain = []
+            while parent != destination and destination in parent.parents:
+                chain.append(parent)
+                parent = parent.parent
+            if any(part.is_symlink() for part in chain) or target.is_dir():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if any(part.is_symlink() for part in chain):
+                continue
+            temporary = target.with_name(target.name + ".openmanus-" + uuid.uuid4().hex + ".tmp")
+            shutil.copyfile(src, temporary, follow_symlinks=False)
+            temporary.chmod(0o644)
+            os.replace(temporary, target)
+
+
+def _bounded_stream(stream: Any, target: bytearray) -> None:
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            return
+        remaining = MAX_OUTPUT - len(target)
+        if remaining > 0:
+            target.extend(chunk[:remaining])
+
+
 def execute_job(value: Any) -> dict[str, Any]:
     project_name, command, timeout = validate_job(value)
     if not TOKEN or not PROJECTS_ROOT.is_dir():
@@ -68,67 +188,99 @@ def execute_job(value: Any) -> dict[str, Any]:
     project = PROJECTS_ROOT / project_name
     if project.is_symlink() or not project.is_dir() or project.resolve().parent != PROJECTS_ROOT:
         raise RequestError("project does not exist or is not a direct workspace child")
+
     job_id = "om-" + uuid.uuid4().hex[:24]
-    docker_command = [
-        "docker", "run", "--rm", "--name", job_id,
-        "--network", "none", "--read-only", "--user", "65534:65534",
-        "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-        "--pids-limit", "128", "--memory", "512m", "--memory-swap", "512m",
-        "--cpus", "1.0", "--ulimit", "nofile=256:256",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-        "--mount", "type=bind,src=" + str(project) + ",dst=/workspace,rw",
-        "--workdir", "/workspace", "--env", "HOME=/tmp",
-        "--env", "PATH=/usr/local/bin:/usr/bin:/bin", IMAGE, *command,
-    ]
+    # Keep the staging copy on the Docker host filesystem, but never mount that
+    # host directory into the untrusted container. Only the container's bounded
+    # tmpfs workspace is visible to the generated code.
+    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(PROJECTS_ROOT.parent)))
+    stage_root.chmod(0o755)
+    staged = stage_root / "workspace"
+    container_created = False
+    baseline: dict[str, str] = {}
     started = time.monotonic()
-    captured: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
-
-    def drain(stream: Any, key: str) -> None:
-        # Always drain the pipe to avoid blocking the child, but retain at most
-        # MAX_OUTPUT bytes per stream so a hostile command cannot exhaust RAM.
-        while True:
-            chunk = stream.read(4096)
-            if not chunk:
-                return
-            remaining = MAX_OUTPUT - len(captured[key])
-            if remaining > 0:
-                captured[key].extend(chunk[:remaining])
-
-    process = subprocess.Popen(
-        docker_command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-    )
-    assert process.stdout is not None and process.stderr is not None
-    out_thread = threading.Thread(target=drain, args=(process.stdout, "stdout"), daemon=True)
-    err_thread = threading.Thread(target=drain, args=(process.stderr, "stderr"), daemon=True)
-    out_thread.start()
-    err_thread.start()
+    result_status = "failed"
+    returncode = 125
+    stdout_data = bytearray()
+    stderr_data = bytearray()
     try:
-        returncode = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
-        subprocess.run(
-            ["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False,
+        baseline = _copy_workspace(project, staged)
+        docker_create = [
+            "docker", "create", "--name", job_id,
+            "--network", "none", "--read-only",
+            "--cap-drop", "ALL", "--cap-add", "CHOWN",
+            "--security-opt", "no-new-privileges:true",
+            "--pids-limit", "128", "--memory", "512m", "--memory-swap", "512m",
+            "--cpus", "1.0", "--ulimit", "nofile=256:256",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--tmpfs", "/workspace:rw,nosuid,nodev,size=256m,mode=1777",
+            "--env", "HOME=/tmp",
+            "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
+            IMAGE, *command,
+        ]
+        subprocess.run(docker_create, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True, timeout=30, check=True,
+                       env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+        container_created = True
+        subprocess.run(["docker", "cp", str(staged) + os.sep + ".", job_id + ":/workspace/"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       text=True, timeout=30, check=True)
+        attached = subprocess.Popen(
+            ["docker", "start", "--attach", job_id], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
         )
-        returncode = 124
-    out_thread.join(timeout=2)
-    err_thread.join(timeout=2)
-    stdout = captured["stdout"].decode("utf-8", "replace")
-    stderr = captured["stderr"].decode("utf-8", "replace")
+        assert attached.stdout is not None and attached.stderr is not None
+        out_thread = threading.Thread(target=_bounded_stream, args=(attached.stdout, stdout_data), daemon=True)
+        err_thread = threading.Thread(target=_bounded_stream, args=(attached.stderr, stderr_data), daemon=True)
+        out_thread.start()
+        err_thread.start()
+        try:
+            returncode = attached.wait(timeout=timeout)
+            result_status = "passed" if returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            subprocess.run(["docker", "kill", "--signal", "KILL", job_id],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=10, check=False)
+            try:
+                attached.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                attached.kill()
+                attached.wait(timeout=5)
+            returncode = 124
+            result_status = "timed_out"
+        out_thread.join(timeout=3)
+        err_thread.join(timeout=3)
+        # The container has stopped before output is copied back. It cannot
+        # continue modifying the staged files during synchronization.
+        subprocess.run(["docker", "cp", job_id + ":/workspace/.", str(staged)],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True, timeout=30, check=False)
+        _safe_sync_back(staged, project, baseline)
+    finally:
+        if container_created:
+            subprocess.run(["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
+        shutil.rmtree(stage_root, ignore_errors=True)
+
     return {
         "job_id": job_id, "returncode": returncode,
-        "stdout": stdout, "stderr": stderr,
+        "stdout": stdout_data.decode("utf-8", "replace"),
+        "stderr": stderr_data.decode("utf-8", "replace"),
         "duration_seconds": round(time.monotonic() - started, 3),
-        "status": "timed_out" if returncode == 124 else ("passed" if returncode == 0 else "failed"),
+        "status": result_status,
     }
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "OpenManusSandbox/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(10)
 
     def _authorized(self) -> bool:
         return bool(TOKEN) and hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN)
