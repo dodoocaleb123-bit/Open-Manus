@@ -48,12 +48,19 @@ Protect the host, application credentials, unrelated user projects, runner contr
 
 The model does not promise protection against a compromised host kernel/hypervisor, a malicious administrator, or vulnerabilities in the selected isolation runtime. Those risks require patching, hardened host configuration, and—where needed—a stronger VM boundary.
 
+## Current implementation status (2026-10-13)
+
+- Added an authenticated runner client and a separate HTTP control-plane prototype under `backend/sandbox_runner/`.
+- The coding workspace routes command/test/build/dependency commands through that client; if the runner is not configured or fails, it raises an error and does not execute locally.
+- The current runner protocol supports bounded one-shot jobs only. Secure previews are intentionally disabled until a runner-managed preview lifecycle and local-only port proxy are implemented.
+- The runner image and protocol tests have been added, but this branch has not yet demonstrated a live Docker integration run. Do not describe the security requirement as complete until the acceptance gates below pass on a real runner.
+
 ## Implementation and acceptance gates
 
 1. Define a narrow runner protocol and immutable server-side policy. Validate project IDs, argv shape, supported operations, and resource ceilings.
 2. Implement a runner adapter that has no host-execution fallback; runner health and configuration must be checked before enabling execution.
 3. Implement ephemeral job lifecycle, project-only mounts, network policy, non-root identity, read-only root filesystem, capability removal, no-new-privileges, resource quotas, output caps, and guaranteed teardown.
-4. Route command, test, build, dependency, and preview operations through the runner. Keep the legacy direct host executor disabled by default and remove it from untrusted-code paths.
+4. Route command, test, build, and dependency operations through the runner. Secure preview execution remains disabled until a runner-managed lifecycle and controlled local-only port proxy are implemented; no preview may fall back to host execution.
 5. Add unit tests for policy validation and fail-closed behavior; add integration tests in the actual runner for host-file/secret access, symlink traversal, network denial, resource exhaustion, output caps, timeout, descendant cleanup, and teardown after cancellation.
 6. Test on Linux and Windows hosts. Windows may use a dedicated Linux VM/container runtime, but the application must not expose unrestricted runtime control to generated jobs.
 7. Repeat the security review against the actual code and integration evidence before considering this complete.
