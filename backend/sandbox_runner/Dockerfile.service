@@ -1,0 +1,10 @@
+FROM docker:27-cli
+
+RUN apk add --no-cache python3
+
+WORKDIR /app
+COPY backend/sandbox_runner/server.py /app/server.py
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+EXPOSE 8765
+CMD ["python3", "/app/server.py"]

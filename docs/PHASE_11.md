@@ -46,19 +46,20 @@ GET /api/workspace?project=<project-name>
 
 The existing GUI workspace panel can use this endpoint for its Code, Files, Logs, Preview, and Settings surfaces.
 
-## Safety boundary
+## Safety boundary and execution policy
 
 - Project names must be simple directories beneath the projects root
-- File paths cannot be absolute or traverse with `..`
+- File paths reject absolute paths and `..` traversal; this is not a defense against every symlink race
 - File writes are bounded to 10 MB per file
-- Commands must begin with an allowlisted executable
-- npm/pnpm/yarn, pip/pip3, and git subcommands are separately allowlisted
-- Commands run without a shell and with a bounded timeout
-- Working directories are always project-scoped
+- Commands begin with an executable allowlist and selected package-manager subcommands
+- Commands run without a shell and have a bounded wall-clock timeout
+- POSIX commands are placed in a new session/process group; Windows cleanup uses `taskkill /T /F`
 - Preview processes receive IDs and can be queried or stopped
 - Snapshots and exports are ZIP archives; `.git` content is excluded
 
-The coding workspace does not permit arbitrary `bash -c` or host-wide shell execution.
+**Important:** an executable allowlist, restricted environment, timeout, and process-group cleanup do not form an OS-enforced sandbox. A permitted Python/Node/package-manager command can execute project-controlled code with the OpenManus process's operating-system permissions. Therefore, command execution and preview startup fail closed by default until a real isolated runner is configured.
+
+For temporary trusted local development only, set `OPENMANUS_ALLOW_UNSANDBOXED_CODE=true` or explicitly construct `CodingWorkspace(..., allow_unsafe_execution=True)`. Do not enable this for untrusted generated code or multi-user deployments. Process-tree cleanup is best-effort and must not be treated as a security boundary. A dedicated isolated runner with least privilege, bounded resources/output, controlled mounts, and explicit network policy remains required before executing untrusted code.
 
 ## Role separation
 

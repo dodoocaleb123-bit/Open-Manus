@@ -1,17 +1,14 @@
 """Controlled coding workspace tools for Qwen2.5-Coder:7b."""
 from __future__ import annotations
 
-import json
-import os
-import resource
-import shutil
-import subprocess
 import time
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+from .runner_client import SandboxRunnerClient, SandboxUnavailable
 
 
 class CodingWorkspaceError(ValueError):
@@ -32,33 +29,23 @@ class CommandResult:
         return asdict(self)
 
 
-@dataclass
-class PreviewProcess:
-    preview_id: str
-    project_dir: str
-    command: tuple[str, ...]
-    port: int
-    process: subprocess.Popen[str]
-    started_at: float
-    log_path: str
-    log_handle: Any
-    viewport: str = "desktop"
-
-
 class CodingWorkspace:
     """Manage project workspaces without allowing arbitrary host access."""
 
-    ALLOWED_COMMANDS = {
-        "python", "python3", "pytest", "pip", "pip3", "uv", "npm", "npx", "node", "yarn", "pnpm", "git"
-    }
+    ALLOWED_COMMANDS = {"python", "python3", "pytest", "npm", "npx", "node"}
     SAFE_NPM_SUBCOMMANDS = {"test", "run", "install", "ci", "build", "lint", "check"}
-    SAFE_PIP_SUBCOMMANDS = {"install", "list", "show", "freeze"}
 
-    def __init__(self, root: str | Path = "./workspace/projects", *, timeout_seconds: int = 120) -> None:
+    def __init__(
+        self,
+        root: str | Path = "./workspace/projects",
+        *,
+        timeout_seconds: int = 120,
+        runner: SandboxRunnerClient | None = None,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.timeout_seconds = timeout_seconds
-        self._previews: dict[str, PreviewProcess] = {}
+        self.runner = runner or SandboxRunnerClient()
 
     def create_project(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", arguments.get("name", "")))
@@ -101,14 +88,12 @@ class CodingWorkspace:
         packages = [str(item) for item in arguments.get("packages", [])]
         if any(not item or item.startswith("-") or any(ch in item for ch in ";&|`$\n\r") for item in packages):
             raise CodingWorkspaceError("dependency names contain unsafe characters")
-        if manager == "npm":
-            command = ["npm", "install", *packages]
-        elif manager in {"pip", "pip3"}:
-            command = [manager, "install", *packages]
-        elif manager == "uv":
-            command = ["uv", "add", *packages]
-        else:
-            raise CodingWorkspaceError("dependency manager must be npm, pip, pip3, or uv")
+        if manager != "npm":
+            raise CodingWorkspaceError(
+                "Only npm operations are currently supported by the isolated runner. "
+                "Python dependency installation remains disabled until a controlled dependency-fetch policy is implemented."
+            )
+        command = ["npm", "install", *packages]
         return self.run_command({**arguments, "command": command})
 
     def run_tests(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -121,21 +106,35 @@ class CodingWorkspace:
 
     def run_command(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         command = tuple(str(item) for item in arguments.get("command", ()))
-        if not command or command[0] not in self.ALLOWED_COMMANDS:
-            raise CodingWorkspaceError(f"command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}")
+        if not command or Path(command[0]).name not in self.ALLOWED_COMMANDS:
+            raise CodingWorkspaceError(
+                f"command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}"
+            )
         self._validate_command(command)
         project = self._project(arguments.get("project", ""))
         if not project.is_dir():
             raise CodingWorkspaceError("project does not exist")
-        timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 600)
-        started = time.monotonic()
+        timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 120)
         try:
-            completed = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout, check=False, env=self._safe_environment(), start_new_session=True, preexec_fn=self._resource_limits)
-            status = "passed" if completed.returncode == 0 else "failed"
-            result = CommandResult(command, str(project), completed.returncode, completed.stdout[-50000:], completed.stderr[-50000:], time.monotonic() - started, status)
-        except subprocess.TimeoutExpired as exc:
-            result = CommandResult(command, str(project), 124, str(exc.stdout or "")[-50000:], str(exc.stderr or "")[-50000:], time.monotonic() - started, "timed_out")
-        return result.to_dict()
+            result = self.runner.run({
+                "project": project.name,
+                "command": list(command),
+                "timeout_seconds": timeout,
+            })
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+        required = {"returncode", "stdout", "stderr", "duration_seconds", "status"}
+        if not required.issubset(result):
+            raise CodingWorkspaceError("sandbox runner returned an incomplete job result")
+        return CommandResult(
+            command=command,
+            cwd=str(project),
+            returncode=int(result["returncode"]),
+            stdout=str(result["stdout"])[-50000:],
+            stderr=str(result["stderr"])[-50000:],
+            duration_seconds=float(result["duration_seconds"]),
+            status=str(result["status"]),
+        ).to_dict()
 
     def snapshot(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", ""))
@@ -159,59 +158,42 @@ class CodingWorkspace:
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        project = self._project(arguments.get("project", ""))
-        if not project.is_dir():
-            raise CodingWorkspaceError("project does not exist")
-        command = tuple(str(item) for item in arguments.get("command", ("python3", "-m", "http.server", str(arguments.get("port", 8000)))))
-        self._validate_command(command, preview=True)
-        port = int(arguments.get("port", 8000))
-        if not 1024 <= port <= 65535:
-            raise CodingWorkspaceError("preview port must be between 1024 and 65535")
-        viewport = str(arguments.get("viewport", "desktop"))
-        if viewport not in {"desktop", "mobile"}:
-            raise CodingWorkspaceError("viewport must be desktop or mobile")
-        log_dir = project / ".openmanus" / "previews"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        preview_id = f"preview_{uuid.uuid4().hex}"
-        log_path = log_dir / f"{preview_id}.log"
-        log_handle = log_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=self._safe_environment())
-        self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time(), str(log_path), log_handle, viewport)
-        return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting", "viewport": viewport, "viewports": {"desktop": {"width": 1440, "height": 900}, "mobile": {"width": 390, "height": 844}}}
+        # Preview serving is deliberately disabled until a runner-managed
+        # lifecycle and a local-only proxy are available and integration-tested.
+        # Never expose generated servers directly or fall back to host execution.
+        raise CodingWorkspaceError(
+            "Isolated previews are unavailable until the local-only preview proxy is implemented"
+        )
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        preview.process.terminate()
+        preview_id = str(arguments.get("preview_id", "")).strip()
         try:
-            preview.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            preview.process.kill()
-        preview.log_handle.close()
-        self._previews.pop(preview_id, None)
-        return {"preview_id": preview_id, "status": "stopped"}
+            return self.runner.stop_preview(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
 
     def preview_status(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "port": preview.port, "status": "running" if preview.process.poll() is None else "stopped", "returncode": preview.process.poll(), "url": f"http://127.0.0.1:{preview.port}", "viewport": preview.viewport, "log_path": preview.log_path}
+        preview_id = str(arguments.get("preview_id", "")).strip()
+        try:
+            return self.runner.preview_status(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+
     def console_output(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        preview_id = str(arguments.get("preview_id", ""))
-        preview = self._previews.get(preview_id)
-        if preview is None:
-            raise CodingWorkspaceError("preview does not exist")
-        path = Path(preview.log_path)
-        return {"preview_id": preview_id, "project": Path(preview.project_dir).name, "status": "running" if preview.process.poll() is None else "stopped", "output": path.read_text(encoding="utf-8", errors="replace")[-50000:] if path.exists() else "", "log_path": str(path)}
+        preview_id = str(arguments.get("preview_id", "")).strip()
+        try:
+            return self.runner.preview_logs(preview_id)
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
 
     def _project(self, value: Any) -> Path:
         name = str(value or "").strip()
         if not name or Path(name).name != name or name in {".", ".."}:
             raise CodingWorkspaceError("project must be a simple workspace directory name")
-        project = (self.root / name).resolve()
+        candidate = self.root / name
+        if candidate.is_symlink():
+            raise CodingWorkspaceError("project directory cannot be a symlink")
+        project = candidate.resolve()
         if self.root not in project.parents:
             raise CodingWorkspaceError("project escapes workspace root")
         return project
@@ -238,24 +220,27 @@ class CodingWorkspace:
             raise CodingWorkspaceError("preview command is not allowlisted")
 
     @staticmethod
-    def _safe_environment() -> dict[str, str]:
-        allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "NODE_PATH"}
-        return {key: value for key, value in os.environ.items() if key in allowed}
-
-    @staticmethod
-    def _resource_limits() -> None:
-        """Apply conservative POSIX limits inside child processes; no shell is used."""
-        cpu = max(1, int(os.getenv("OPENMANUS_COMMAND_CPU_SECONDS", "120")))
-        memory = max(128, int(os.getenv("OPENMANUS_COMMAND_MEMORY_MB", "1024"))) * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-    @staticmethod
     def _zip_project(project: Path, target: Path) -> None:
+        """Archive project files without internal state, secrets, or symlinks."""
+        secret_names = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519"}
+        secret_suffixes = {".pem", ".key", ".p12", ".pfx"}
         with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in project.rglob("*"):
-                if path == target or ".git" in path.parts:
+                relative = path.relative_to(project)
+                # Internal snapshots/previews can contain previous archives and
+                # logs; excluding the whole directory also prevents recursive
+                # snapshot growth and avoids exporting internal state.
+                if path == target or ".git" in relative.parts or ".openmanus" in relative.parts:
+                    continue
+                # Never follow or archive symlinks: their targets may be outside
+                # the project and can change between validation and archiving.
+                if path.is_symlink():
+                    continue
+                name = path.name.lower()
+                if name in secret_names or name.startswith(".env.") or path.suffix.lower() in secret_suffixes:
                     continue
                 if path.is_file():
-                    archive.write(path, path.relative_to(project))
+                    resolved = path.resolve()
+                    if project.resolve() not in resolved.parents:
+                        continue
+                    archive.write(path, relative)

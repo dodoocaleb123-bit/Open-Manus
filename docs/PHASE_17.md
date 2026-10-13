@@ -6,7 +6,7 @@ Phase 17 hardens the existing DeepSeek-first execution boundary without adding a
 
 - **Authentication:** optional bearer-token authentication through `OPENMANUS_AUTH_TOKEN`; local development remains explicitly single-user when unset.
 - **Project permissions:** owner/editor/viewer ACLs and permission checks for project operations.
-- **Sandboxed commands:** coding commands remain executable-only, allowlisted, project-scoped, shell-disabled, and run with a restricted environment and resource limits.
+- **Execution gate (not a sandbox):** command execution and previews fail closed by default because the current workspace has no OS-enforced sandbox. An explicit `OPENMANUS_ALLOW_UNSANDBOXED_CODE=true` opt-in exists only for trusted local development. When opted in, commands are allowlisted, project-scoped, shell-disabled, and use best-effort resource/process cleanup; generated code still has the OpenManus process's OS permissions.
 - **File access restrictions:** project names and relative paths reject traversal and symlink escapes.
 - **Safe-secret panel:** `SecretStore` encrypts values at rest with Fernet; normal task context and audit records contain only opaque references and masked metadata.
 - **Tool permissions:** tools can declare a permission such as `project.write`, `tool.execute`, or `secret.use`; the executor checks it before dispatch.
