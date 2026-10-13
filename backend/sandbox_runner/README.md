@@ -25,7 +25,7 @@ Build the execution image from backend/sandbox_runner/Dockerfile, tag it openman
 
 ## Current limitations
 
-- The protocol currently supports one-shot command jobs, not preview lifecycle management. Open-Manus preview start/stop/status intentionally fails closed until a local-only port proxy is implemented.
+- One-shot command jobs and previews run in separate ephemeral containers. Each preview gets its own internal-only Docker network and a TCP proxy published only on host loopback; the proxy has no host mounts and cannot reach the public internet.
 - Network access is disabled inside job containers. Dependency downloads are therefore not supported by this runner yet; do not enable arbitrary egress to work around this.
 - Resource limits include CPU, memory, PID count, file descriptors, wall-clock time, bounded tmpfs workspace, bounded source/output size, bounded captured output, and a small concurrent-job semaphore. Hostile integration tests must verify these limits before this can be considered complete.
 - The runner has not been validated on a live Docker daemon in CI. Unit tests of request validation are not proof of sandbox isolation.
