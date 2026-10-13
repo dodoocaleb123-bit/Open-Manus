@@ -158,13 +158,32 @@ class CodingWorkspace:
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        # Preview serving is deliberately disabled until a runner-managed
-        # lifecycle and a local-only proxy are available and integration-tested.
-        # Never expose generated servers directly or fall back to host execution.
-        raise CodingWorkspaceError(
-            "Isolated previews are unavailable until the local-only preview proxy is implemented"
-        )
-
+        """Start a project preview inside the isolated runner, never on the host."""
+        project = self._project(arguments.get("project", ""))
+        if not project.is_dir():
+            raise CodingWorkspaceError("project does not exist")
+        command = tuple(str(item) for item in arguments.get("command", ()))
+        if not command:
+            raise CodingWorkspaceError("preview command must be provided explicitly")
+        if Path(command[0]).name not in self.ALLOWED_COMMANDS:
+            raise CodingWorkspaceError(f"preview command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}")
+        self._validate_command(command, preview=True)
+        port_value = arguments.get("port", 8000)
+        if isinstance(port_value, bool):
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535")
+        try:
+            port = int(port_value)
+        except (TypeError, ValueError) as exc:
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535") from exc
+        if not 1024 <= port <= 65535:
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535")
+        try:
+            result = self.runner.start_preview({"project": project.name, "command": list(command), "port": port})
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+        if not isinstance(result, dict) or not result.get("preview_id") or result.get("status") != "running":
+            raise CodingWorkspaceError("sandbox runner returned an incomplete preview startup result")
+        return result
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         preview_id = str(arguments.get("preview_id", "")).strip()
         try:
