@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from .runner_client import SandboxRunnerClient, SandboxUnavailable
+
 
 class CodingWorkspaceError(ValueError):
     """Raised when a coding workspace operation is unsafe or invalid."""
@@ -58,26 +60,13 @@ class CodingWorkspace:
         root: str | Path = "./workspace/projects",
         *,
         timeout_seconds: int = 120,
-        allow_unsafe_execution: bool | None = None,
+        runner: SandboxRunnerClient | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.timeout_seconds = timeout_seconds
-        # This workspace currently has no OS-enforced sandbox. Fail closed by
-        # default; the environment override is an explicit, temporary opt-in
-        # for trusted local development only, not a security boundary.
-        if allow_unsafe_execution is None:
-            allow_unsafe_execution = os.getenv("OPENMANUS_ALLOW_UNSANDBOXED_CODE", "").lower() == "true"
-        self.allow_unsafe_execution = allow_unsafe_execution
+        self.runner = runner or SandboxRunnerClient()
         self._previews: dict[str, PreviewProcess] = {}
-
-    def _require_execution_opt_in(self) -> None:
-        if not self.allow_unsafe_execution:
-            raise CodingWorkspaceError(
-                "Code execution is disabled because no OS-enforced sandbox is configured. "
-                "Use an isolated runner, or explicitly set OPENMANUS_ALLOW_UNSANDBOXED_CODE=true "
-                "only for trusted local projects."
-            )
 
     def create_project(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", arguments.get("name", "")))
@@ -139,35 +128,36 @@ class CodingWorkspace:
         return self.run_command({**arguments, "command": command, "operation": "build"})
 
     def run_command(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        self._require_execution_opt_in()
         command = tuple(str(item) for item in arguments.get("command", ()))
-        if not command or command[0] not in self.ALLOWED_COMMANDS:
-            raise CodingWorkspaceError(f"command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}")
+        if not command or Path(command[0]).name not in self.ALLOWED_COMMANDS:
+            raise CodingWorkspaceError(
+                f"command must start with an allowlisted executable: {sorted(self.ALLOWED_COMMANDS)}"
+            )
         self._validate_command(command)
         project = self._project(arguments.get("project", ""))
         if not project.is_dir():
             raise CodingWorkspaceError("project does not exist")
-        timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 600)
-        started = time.monotonic()
-        process_options: dict[str, Any] = {}
-        if os.name == "posix":
-            process_options["start_new_session"] = True
-            process_options["preexec_fn"] = self._resource_limits
-        elif os.name == "nt":
-            process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        process = subprocess.Popen(
-            command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=self._safe_environment(), **process_options,
-        )
+        timeout = min(max(int(arguments.get("timeout_seconds", self.timeout_seconds)), 1), 120)
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-            status = "passed" if process.returncode == 0 else "failed"
-            result = CommandResult(command, str(project), process.returncode, stdout[-50000:], stderr[-50000:], time.monotonic() - started, status)
-        except subprocess.TimeoutExpired:
-            self._terminate_process_tree(process)
-            stdout, stderr = process.communicate()
-            result = CommandResult(command, str(project), 124, stdout[-50000:], stderr[-50000:], time.monotonic() - started, "timed_out")
-        return result.to_dict()
+            result = self.runner.run({
+                "project": project.name,
+                "command": list(command),
+                "timeout_seconds": timeout,
+            })
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+        required = {"returncode", "stdout", "stderr", "duration_seconds", "status"}
+        if not required.issubset(result):
+            raise CodingWorkspaceError("sandbox runner returned an incomplete job result")
+        return CommandResult(
+            command=command,
+            cwd=str(project),
+            returncode=int(result["returncode"]),
+            stdout=str(result["stdout"])[-50000:],
+            stderr=str(result["stderr"])[-50000:],
+            duration_seconds=float(result["duration_seconds"]),
+            status=str(result["status"]),
+        ).to_dict()
 
     def snapshot(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         project = self._project(arguments.get("project", ""))
@@ -191,31 +181,13 @@ class CodingWorkspace:
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        self._require_execution_opt_in()
-        project = self._project(arguments.get("project", ""))
-        if not project.is_dir():
-            raise CodingWorkspaceError("project does not exist")
-        command = tuple(str(item) for item in arguments.get("command", ("python" if os.name == "nt" else "python3", "-m", "http.server", str(arguments.get("port", 8000)))))
-        self._validate_command(command, preview=True)
-        port = int(arguments.get("port", 8000))
-        if not 1024 <= port <= 65535:
-            raise CodingWorkspaceError("preview port must be between 1024 and 65535")
-        viewport = str(arguments.get("viewport", "desktop"))
-        if viewport not in {"desktop", "mobile"}:
-            raise CodingWorkspaceError("viewport must be desktop or mobile")
-        log_dir = project / ".openmanus" / "previews"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        preview_id = f"preview_{uuid.uuid4().hex}"
-        log_path = log_dir / f"{preview_id}.log"
-        log_handle = log_path.open("a", encoding="utf-8")
-        process_options: dict[str, Any] = {}
-        if os.name == "posix":
-            process_options["start_new_session"] = True
-        elif os.name == "nt":
-            process_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        process = subprocess.Popen(command, cwd=project, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=self._safe_environment(), **process_options)
-        self._previews[preview_id] = PreviewProcess(preview_id, str(project), command, port, process, time.time(), str(log_path), log_handle, viewport)
-        return {"preview_id": preview_id, "project": project.name, "port": port, "url": f"http://127.0.0.1:{port}", "status": "starting", "viewport": viewport, "viewports": {"desktop": {"width": 1440, "height": 900}, "mobile": {"width": 390, "height": 844}}}
+        # Preview execution must use a runner-managed port proxy. The current
+        # runner protocol does not expose that lifecycle yet, so fail closed
+        # instead of launching generated servers on the Open-Manus host.
+        raise CodingWorkspaceError(
+            "Secure previews are unavailable until the isolated runner's preview proxy is configured. "
+            "No host process was started."
+        )
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         preview_id = str(arguments.get("preview_id", ""))
