@@ -37,8 +37,13 @@ New file: `tests/test_phase3_app_lifecycle.py`
 - Snapshot and ZIP export validation, secret exclusion, and project data persistence after reopening the workspace.
 - Reject traversal paths.
 
-## Results status
+## CI results
 
-CI results are pending until the workflow for the PR completes. This report will be updated with observed job conclusions; no CI pass is claimed before the run finishes.
+PR head commit: `109109e919ec494a566149121554ec6c0e409410`.
+
+- [Phase 3 app lifecycle workflow run 38336573690](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38336573690): **passed**. Ubuntu lifecycle/security tests, Windows workspace lifecycle tests, and both sandbox images built successfully.
+- [Python tests workflow run 38336573693](https://github.com/dodoocaleb123-bit/Open-Manus/actions/runs/38336573693): **passed**. Windows pytest, Ubuntu pytest, Docker sandbox integration, private runner Compose validation, and live Linux Docker isolation tests all passed.
+
+CI validates the automated mocks and Linux sandbox path; it does not replace the target deployment smoke test below. Exact test counts are not available in the workflow-job summaries returned to this audit.
 
 Target-deployment verification is not available from repository CI alone. Windows Docker Desktop, live HTTP/browser interaction against the real preview proxy, app-container restart recovery, and actual persisted workspace-volume recovery must be exercised in the user's deployment before those are marked verified. The runner currently keeps preview records in process memory and startup cleanup removes stale sandbox resources; preview sessions themselves are not durable across runner restart. Project files and workspace snapshots/exports persist on the mounted project volume.
