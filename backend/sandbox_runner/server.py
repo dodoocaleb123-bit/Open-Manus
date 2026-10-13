@@ -37,6 +37,7 @@ JOB_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 MAX_ACTIVE_PREVIEWS = 4
 PREVIEWS: dict[str, dict[str, Any]] = {}
 PREVIEW_LOCK = threading.Lock()
+PREVIEW_STARTING = 0
 PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 EXECUTABLES = {"python", "python3", "pytest", "node", "npm", "npx"}
 NPM_SUBCOMMANDS = {"test", "run", "ci", "build", "lint", "check", "install"}
@@ -504,15 +505,18 @@ def start_preview(value: Any) -> dict[str, Any]:
     if project.is_symlink() or not project.is_dir() or project.resolve().parent != PROJECTS_ROOT:
         raise RequestError("project does not exist or is not a direct workspace child")
 
+    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(PROJECTS_ROOT.parent)))
+    stage_root.chmod(0o755)
+    global PREVIEW_STARTING
     with PREVIEW_LOCK:
-        if len(PREVIEWS) >= MAX_ACTIVE_PREVIEWS:
+        if len(PREVIEWS) + PREVIEW_STARTING >= MAX_ACTIVE_PREVIEWS:
+            shutil.rmtree(stage_root, ignore_errors=True)
             raise RequestError("active preview limit reached")
+        PREVIEW_STARTING += 1
     preview_id = uuid.uuid4().hex[:24]
     sandbox_id = "om-prev-" + preview_id
     proxy_id = "om-proxy-" + preview_id
     network_id = "om-net-" + preview_id
-    stage_root = Path(tempfile.mkdtemp(prefix=".openmanus-sandbox-", dir=str(PROJECTS_ROOT.parent)))
-    stage_root.chmod(0o755)
     staged = stage_root / "workspace"
     network_created = False
     sandbox_created = False
@@ -626,6 +630,8 @@ def start_preview(value: Any) -> dict[str, Any]:
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False, env=_docker_env())
         raise
     finally:
+        with PREVIEW_LOCK:
+            PREVIEW_STARTING -= 1
         shutil.rmtree(stage_root, ignore_errors=True)
 
 
@@ -761,6 +767,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self._send(200, stop_preview(match.group(1)))
+        except RequestError as exc:
+            self._send(404, {"error": str(exc)})
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             self._send(503, {"error": "preview cleanup failed", "detail": str(exc)[:500]})
 
