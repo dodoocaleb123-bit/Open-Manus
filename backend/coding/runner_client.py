@@ -41,9 +41,23 @@ class SandboxRunnerClient:
                 "Isolated code execution is unavailable: configure OPENMANUS_SANDBOX_URL "
                 "and OPENMANUS_SANDBOX_TOKEN. Host execution fallback is disabled."
             )
-        return self._request("POST", "/v1/jobs", payload)
+        try:
+            job_timeout = int(payload.get("timeout_seconds", 60))
+        except (TypeError, ValueError):
+            job_timeout = 60
+        # Wait beyond the server-enforced execution deadline so the client
+        # does not report a false failure while a bounded job keeps running.
+        request_timeout = max(self.request_timeout, min(max(job_timeout, 1), 120) + 45)
+        return self._request("POST", "/v1/jobs", payload, timeout=request_timeout)
 
-    def _request(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         if not self.base_url or not self.token:
             raise SandboxUnavailable("Sandbox runner URL/token is not configured")
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -58,7 +72,7 @@ class SandboxRunnerClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.request_timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout or self.request_timeout) as response:
                 data = response.read(1_000_001)
         except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise SandboxUnavailable("Sandbox runner is unavailable; execution was not attempted") from exc
