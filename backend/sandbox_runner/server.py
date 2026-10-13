@@ -28,6 +28,14 @@ from typing import Any
 TOKEN = os.environ.get("OPENMANUS_SANDBOX_TOKEN", "")
 PROJECTS_ROOT = Path(os.environ.get("OPENMANUS_SANDBOX_PROJECTS_ROOT", "/workspace/projects")).resolve()
 IMAGE = os.environ.get("OPENMANUS_SANDBOX_IMAGE", "openmanus-code-runner:latest")
+
+
+def _staging_root() -> Path:
+    configured = os.environ.get("OPENMANUS_SANDBOX_STAGING_ROOT")
+    root = Path(configured).resolve() if configured else PROJECTS_ROOT.parent
+    if not root.is_dir():
+        raise RuntimeError("OPENMANUS_SANDBOX_STAGING_ROOT must be an existing private directory")
+    return root
 MAX_BODY = 64 * 1024
 MAX_OUTPUT = 50_000
 MAX_TIMEOUT = 120
