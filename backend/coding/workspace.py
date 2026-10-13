@@ -153,17 +153,70 @@ class CodingWorkspace:
             raise CodingWorkspaceError("project does not exist")
         export_dir = self.root / "exports"
         export_dir.mkdir(exist_ok=True)
-        target = export_dir / f"{project.name}-{time.strftime('%Y%m%d-%H%M%S')}.zip"
+        target = export_dir / f"{project.name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}.zip"
         self._zip_project(project, target)
         return {"project": project.name, "path": str(target), "download": True, "size": target.stat().st_size}
 
     def start_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
-        # Preview serving is deliberately disabled until a runner-managed
-        # lifecycle and a local-only proxy are available and integration-tested.
-        # Never expose generated servers directly or fall back to host execution.
-        raise CodingWorkspaceError(
-            "Isolated previews are unavailable until the local-only preview proxy is implemented"
-        )
+        """Start a project preview through the isolated runner and loopback proxy.
+
+        The generated server never runs on the application host. The runner
+        copies a sanitized project into a no-network container and exposes it
+        only through its constrained local proxy.
+        """
+        project = self._project(arguments.get("project", ""))
+        if not project.is_dir():
+            raise CodingWorkspaceError("project does not exist")
+        port_value = arguments.get("port", 8000)
+        if isinstance(port_value, bool):
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535")
+        try:
+            port = int(port_value)
+        except (TypeError, ValueError) as exc:
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535") from exc
+        if not 1024 <= port <= 65535:
+            raise CodingWorkspaceError("preview port must be an integer between 1024 and 65535")
+
+        command_value = arguments.get("command")
+        if command_value is None:
+            # Safe static preview works for HTML/CSS/JS projects without package
+            # installation. Dynamic apps must provide an explicit allowlisted
+            # command whose server binds to 0.0.0.0 on the requested port.
+            command = ["python", "-m", "http.server", str(port), "--bind", "0.0.0.0"]
+        elif isinstance(command_value, (list, tuple)):
+            command = [str(part) for part in command_value]
+        else:
+            raise CodingWorkspaceError("preview command must be an argv array; shell strings are not accepted")
+        if not command or Path(command[0]).name not in {"python", "python3", "node", "npm", "npx"}:
+            raise CodingWorkspaceError("preview command must start with an allowlisted executable")
+        self._validate_command(tuple(command), preview=True)
+        try:
+            result = self.runner.start_preview({
+                "project": project.name,
+                "command": command,
+                "port": port,
+            })
+        except SandboxUnavailable as exc:
+            raise CodingWorkspaceError(str(exc)) from exc
+        required = {"preview_id", "project", "status", "port", "url"}
+        if not required.issubset(result):
+            # If the runner started a preview but returned an invalid envelope,
+            # clean it up before reporting the protocol failure.
+            preview_id = result.get("preview_id")
+            if isinstance(preview_id, str):
+                try:
+                    self.runner.stop_preview(preview_id)
+                except SandboxUnavailable:
+                    pass
+            raise CodingWorkspaceError("sandbox runner returned an incomplete preview result")
+        return {
+            **result,
+            "ready": result.get("status") == "running",
+            "viewports": {
+                "desktop": {"width": 1440, "height": 900},
+                "mobile": {"width": 390, "height": 844},
+            },
+        }
 
     def stop_preview(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         preview_id = str(arguments.get("preview_id", "")).strip()
