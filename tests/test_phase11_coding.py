@@ -6,7 +6,22 @@ import pytest
 from coding import CodingWorkspace, CodingWorkspaceError
 from api import OpenManusAPI
 from execution import ControlledExecutor, SQLiteStateStore
-from model_adapters import ModelRole, HealthStatus
+from model_adapters import ModelRole
+
+
+class FakeSandboxRunner:
+    """Protocol double: tests the adapter contract without running host code."""
+
+    def run(self, payload):
+        timed_out = payload.get("timeout_seconds") == 1 and "sleep" in payload["command"][-1]
+        return {
+            "job_id": "test-job",
+            "returncode": 124 if timed_out else 0,
+            "stdout": "",
+            "stderr": "",
+            "duration_seconds": 1.0,
+            "status": "timed_out" if timed_out else "passed",
+        }
 
 
 class Registry:
@@ -20,18 +35,19 @@ class Registry:
         return tuple(self.adapters)
 
 
-def test_workspace_execution_fails_closed_without_sandbox_opt_in(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPENMANUS_ALLOW_UNSANDBOXED_CODE", raising=False)
+def test_workspace_execution_fails_closed_without_runner(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENMANUS_SANDBOX_URL", raising=False)
+    monkeypatch.delenv("OPENMANUS_SANDBOX_TOKEN", raising=False)
     workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "demo"})
-    with pytest.raises(CodingWorkspaceError, match="no OS-enforced sandbox"):
+    with pytest.raises(CodingWorkspaceError, match="Host execution fallback is disabled"):
         workspace.run_command({"project": "demo", "command": ["python", "-c", "print('should not run')"]})
-    with pytest.raises(CodingWorkspaceError, match="no OS-enforced sandbox"):
+    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
         workspace.start_preview({"project": "demo", "port": 18768})
 
 
 def test_workspace_files_commands_snapshots_and_export(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     created = workspace.create_project({"project": "demo"})
     assert created["created"] is True
     workspace.write_file({"project": "demo", "path": "tests/test_ok.py", "content": "def test_ok():\n    assert 2 + 2 == 4\n"})
@@ -40,8 +56,6 @@ def test_workspace_files_commands_snapshots_and_export(tmp_path):
     result = workspace.run_tests({"project": "demo", "command": ["pytest", "-q"]})
     assert result["status"] == "passed"
     assert result["returncode"] == 0
-    # Archives must not recursively include prior snapshots, internal logs,
-    # secrets, or symlinks that point outside the project.
     project = tmp_path / "projects" / "demo"
     (project / ".env").write_text("API_KEY=do-not-export", encoding="utf-8")
     (project / "private.pem").write_text("private-key", encoding="utf-8")
@@ -50,8 +64,7 @@ def test_workspace_files_commands_snapshots_and_export(tmp_path):
     try:
         (project / "outside-link.txt").symlink_to(outside)
     except (OSError, NotImplementedError):
-        pass  # Symlink creation may require elevated permissions on Windows.
-
+        pass
     snapshot = workspace.snapshot({"project": "demo"})
     export = workspace.export_project({"project": "demo"})
     assert Path(snapshot["path"]).is_file()
@@ -68,7 +81,7 @@ def test_workspace_files_commands_snapshots_and_export(tmp_path):
 
 
 def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     workspace.create_project({"project": "demo"})
     with pytest.raises(CodingWorkspaceError, match="escapes"):
         workspace.write_file({"project": "demo", "path": "../secret.txt", "content": "no"})
@@ -78,17 +91,11 @@ def test_workspace_rejects_escape_and_unallowlisted_commands(tmp_path):
         workspace.run_command({"project": "demo", "command": ["npm", "exec", "unsafe"]})
 
 
-def test_preview_server_lifecycle(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+def test_preview_fails_closed_until_isolated_preview_proxy_exists(tmp_path):
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     workspace.create_project({"project": "demo"})
-    preview = workspace.start_preview({"project": "demo", "port": 18765})
-    try:
-        time.sleep(0.15)
-        status = workspace.preview_status({"preview_id": preview["preview_id"]})
-        assert status["status"] == "running"
-    finally:
-        stopped = workspace.stop_preview({"preview_id": preview["preview_id"]})
-    assert stopped["status"] == "stopped"
+    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+        workspace.start_preview({"project": "demo", "port": 18765})
 
 
 def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monkeypatch):
@@ -102,82 +109,28 @@ def test_api_registers_coder_tools_and_keeps_model_roles_distinct(tmp_path, monk
     store.close()
 
 
-
-def test_workspace_timeout_kills_surviving_descendant(tmp_path):
-    import os
-    import sys
-
-    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1, allow_unsafe_execution=True)
-    workspace.create_project({"project": "tree"})
-    marker = tmp_path / "descendant-survived.txt"
-    child_code = (
-        "import time; time.sleep(2); "
-        f"open({str(marker)!r}, 'w', encoding='utf-8').write('survived')"
-    )
-    parent_code = (
-        "import subprocess, sys, time; "
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
-        "time.sleep(10)"
-    )
-    result = workspace.run_command({
-        "project": "tree",
-        "command": ["python" if os.name == "nt" else "python3", "-c", parent_code],
-        "timeout_seconds": 1,
-    })
-    assert result["status"] == "timed_out"
-    # If cleanup only killed the direct child, the descendant would write this
-    # marker after the parent timed out. Allow enough time to expose that leak.
-    time.sleep(2.5)
-    assert not marker.exists(), "descendant process survived command timeout"
-
-
-def test_workspace_command_timeout_terminates_child(tmp_path):
-    import os
-
-    workspace = CodingWorkspace(tmp_path / "projects", timeout_seconds=1, allow_unsafe_execution=True)
+def test_workspace_timeout_result_is_preserved_from_runner(tmp_path):
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     workspace.create_project({"project": "timeout"})
     result = workspace.run_command({
         "project": "timeout",
-        "command": ["python" if os.name == "nt" else "python3", "-c", "import time; time.sleep(10)"],
+        "command": ["python", "-c", "import time; time.sleep(10)"],
         "timeout_seconds": 1,
     })
     assert result["status"] == "timed_out"
     assert result["returncode"] == 124
 
 
-
-def test_workspace_serves_created_web_app_over_preview(tmp_path):
-    import time
-    import urllib.error
-    import urllib.request
-
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+def test_created_web_app_preview_fails_closed_without_proxy(tmp_path):
+    workspace = CodingWorkspace(tmp_path / "projects", runner=FakeSandboxRunner())
     workspace.create_project({"project": "todo"})
     workspace.write_file({
         "project": "todo",
         "path": "index.html",
         "content": "<!doctype html><title>Todo</title><h1>My tasks</h1>",
     })
-    port = 18767
-    preview = workspace.start_preview({
-        "project": "todo",
-        "port": port,
-        "command": ["python" if __import__("os").name == "nt" else "python3", "-m", "http.server", str(port)],
-    })
-    try:
-        deadline = time.monotonic() + 5
-        response_body = None
-        while time.monotonic() < deadline:
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.5) as response:
-                    response_body = response.read().decode("utf-8")
-                    break
-            except (OSError, urllib.error.URLError):
-                time.sleep(0.1)
-        assert response_body is not None, workspace.console_output({"preview_id": preview["preview_id"]})
-        assert "<h1>My tasks</h1>" in response_body
-    finally:
-        workspace.stop_preview({"preview_id": preview["preview_id"]})
+    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+        workspace.start_preview({"project": "todo", "port": 18767})
 
 
 def test_windows_process_tree_cleanup_attempts_taskkill_after_parent_exit(monkeypatch):
@@ -202,6 +155,5 @@ def test_windows_process_tree_cleanup_attempts_taskkill_after_parent_exit(monkey
     monkeypatch.setattr(workspace_module.os, "name", "nt")
     monkeypatch.setattr(workspace_module.subprocess, "run", fake_run)
     CodingWorkspace._terminate_process_tree(ExitedProcess())
-
     assert calls
     assert calls[0][0] == ["taskkill", "/PID", "12345", "/T", "/F"]
