@@ -397,8 +397,9 @@ def execute_job(value: Any) -> dict[str, Any]:
                 result_status = "failed"
                 returncode = 125
                 detail = cleanup.stderr[-1000:].encode("utf-8", "replace")
-                stderr_data.extend(b"\nSandbox cleanup could not run; output discarded and container removed.\n")
-                stderr_data.extend(detail)
+                diagnostic = b"\nSandbox cleanup could not run; output discarded and container removed.\n" + detail
+                remaining = max(0, MAX_OUTPUT - len(stderr_data))
+                stderr_data.extend(diagnostic[:remaining])
             else:
                 exported = subprocess.run(
                     ["docker", "exec", job_id, "tar", "-c", "-f", "-", "-C", "/workspace", "."],
