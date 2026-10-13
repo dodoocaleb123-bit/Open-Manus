@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import tarfile
@@ -606,6 +607,15 @@ def start_preview(value: Any) -> dict[str, Any]:
         if not mapped or ":" not in mapped[0]:
             raise RuntimeError("preview proxy did not receive a loopback port")
         host_port = int(mapped[0].rsplit(":", 1)[1])
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", host_port), timeout=0.25):
+                    break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("preview proxy did not accept loopback connections")
+                time.sleep(0.1)
         host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_HOST", "127.0.0.1")
         screenshot_host = os.environ.get("OPENMANUS_SANDBOX_PREVIEW_INTERNAL_HOST", host)
         record = {
