@@ -22,31 +22,19 @@ class Registry:
         return tuple(self.adapters)
 
 
-def test_preview_viewports_console_and_screenshot(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+def test_preview_execution_fails_closed_without_isolated_proxy(tmp_path):
+    import pytest
+    from coding import CodingWorkspaceError
+
+    workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "demo"})
     workspace.write_file({"project": "demo", "path": "index.html", "content": "<h1>Hello preview</h1>"})
-    preview = workspace.start_preview({"project": "demo", "port": 18766, "viewport": "mobile"})
-
-    def screenshotter(url, viewport, target):
-        Path(target).write_bytes(b"PNG")
-        return {"path": str(target), "url": url, "viewport": viewport}
-
-    service = PreviewService(workspace, screenshotter=screenshotter)
-    try:
-        manifest = service.manifest({"project": "demo", "preview_id": preview["preview_id"], "viewport": "mobile"})
-        assert manifest["ready"] is True
-        assert manifest["viewport_size"] == {"width": 390, "height": 844}
-        shot = service.screenshot({"preview_id": preview["preview_id"], "viewport": "mobile"})
-        assert Path(shot["path"]).read_bytes() == b"PNG"
-        console = service.console({"preview_id": preview["preview_id"]})
-        assert console["status"] == "running"
-    finally:
-        workspace.stop_preview({"preview_id": preview["preview_id"]})
+    with pytest.raises(CodingWorkspaceError, match="Secure previews are unavailable"):
+        workspace.start_preview({"project": "demo", "port": 18766, "viewport": "mobile"})
 
 
 def test_code_view_and_typed_artifacts_persist(tmp_path):
-    workspace = CodingWorkspace(tmp_path / "projects", allow_unsafe_execution=True)
+    workspace = CodingWorkspace(tmp_path / "projects")
     workspace.create_project({"project": "demo"})
     workspace.write_file({"project": "demo", "path": "report.md", "content": "# Research"})
     store = SQLiteStateStore(tmp_path / "artifacts.sqlite3")
