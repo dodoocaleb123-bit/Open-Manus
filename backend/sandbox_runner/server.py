@@ -360,18 +360,30 @@ def execute_job(value: Any) -> dict[str, Any]:
                 " if not alive: break\n"
                 " time.sleep(0.05)"
             )
-            subprocess.run(["docker", "exec", "--user", "0:0", job_id, "python", "-c", cleanup_code],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, text=True, timeout=10, check=True, env=_docker_env())
-            exported = subprocess.run(
-                ["docker", "exec", job_id, "tar", "-c", "-f", "-", "-C", "/workspace", "."],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                timeout=30, check=True, env=_docker_env(),
+            cleanup = subprocess.run(
+                ["docker", "exec", "--user", "0:0", job_id, "python", "-c", cleanup_code],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, timeout=10, check=False, env=_docker_env(),
             )
-            if len(exported.stdout) > MAX_WORKSPACE_BYTES + MAX_PROJECT_FILES * 1024:
-                raise RequestError("job output archive exceeds the runner's size limit")
-            _extract_workspace_archive(exported.stdout, staged)
-            _safe_sync_back(staged, project, baseline)
+            if cleanup.returncode:
+                # A hostile process fan-out can fill the PID cgroup so even a
+                # trusted cleanup exec cannot start. Fail closed: discard output
+                # and let the finally block remove the entire container.
+                result_status = "failed"
+                returncode = 125
+                detail = cleanup.stderr[-1000:].encode("utf-8", "replace")
+                stderr_data.extend(b"\nSandbox cleanup could not run; output discarded and container removed.\n")
+                stderr_data.extend(detail)
+            else:
+                exported = subprocess.run(
+                    ["docker", "exec", job_id, "tar", "-c", "-f", "-", "-C", "/workspace", "."],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=30, check=True, env=_docker_env(),
+                )
+                if len(exported.stdout) > MAX_WORKSPACE_BYTES + MAX_PROJECT_FILES * 1024:
+                    raise RequestError("job output archive exceeds the runner's size limit")
+                _extract_workspace_archive(exported.stdout, staged)
+                _safe_sync_back(staged, project, baseline)
     finally:
         if container_created:
             subprocess.run(["docker", "rm", "--force", job_id], stdin=subprocess.DEVNULL,
