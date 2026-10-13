@@ -77,7 +77,6 @@ class ModelRegistry:
                 "role": role.value,
                 "model": adapter.model,
                 "configured": "true",
-                "endpoint": getattr(getattr(adapter, "config", None), "base_url", "unknown"),
             }
             for role, adapter in self.adapters.items()
         )
